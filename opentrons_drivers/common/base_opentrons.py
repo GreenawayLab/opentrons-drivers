@@ -1,21 +1,26 @@
 from opentrons import protocol_api
 from collections import defaultdict
 import json
-from pprint import pprint
-import time
+from opentrons.protocol_api.instrument_context import InstrumentContext
+from opentrons.protocol_api.labware import Labware
+from typing import Dict, List
+from opentrons_drivers.common.custom_types import StockWell, CoreWell
+
 
 class Opentrons:
-    """TODO: add docstring."""
+    """BaseRobot class that stores state and hardware of the machine"""
 
-    def __init__(self, protocol: protocol_api.ProtocolContext, base_config: dict[str, str]) -> None:
-        """TODO: add docstring."""
+    def __init__(self, protocol: protocol_api.ProtocolContext, 
+                 base_config: Dict[str, str]) -> None:
+        """Initialize the BaseRobot with a protocol context and base configuration."""
         self.protocol = protocol
         self.base_config = base_config
-        # TODO: type hint for these attributes
-        self.core_plates = {}  # Plates where substances are mixed
-        self.support_plates = []  # Tipracks, etc.
-        self.stock_amounts = defaultdict(list)  # Stock well information
-        self.core_amounts = defaultdict(list)  # Core well information
+
+        self.core_plates: Dict[str, Labware] = {}  # Plates where substances are mixed
+        self.support_plates: List[Labware] = []  # Tipracks, etc.
+        self.stock_amounts: Dict[str, List[StockWell]] = defaultdict(list)  # Stock well information
+        self.core_amounts: Dict[str, Dict[str, CoreWell]] = defaultdict(dict)  # Core well information
+        self.pipettes: Dict[str, InstrumentContext] = {}  # Pipette objects
 
         # Set gantry speeds
         for ax in ["X", "Y", "Z"]:
@@ -26,7 +31,8 @@ class Opentrons:
 
         # Load stock plates (ONLY fills stock_amounts, no plate objects)
         self._load_assigned_plates("stock_assigned.json", is_stock=True)
-        self.pipettes = {}
+
+        # Load pipettes
         pipettes = self.base_config["pipettes"]
         for mount, pipette in pipettes.items():
             unit = protocol.load_instrument(pipette['name'], mount=mount)
@@ -61,13 +67,22 @@ class Opentrons:
             plate.set_offset(x=offset.get('x', 0), y=offset.get('y', 0), z=offset.get('z', 0))
 
             # Ensure all wells have substance and amount values
-            well_defaults = {well: {"substance": {"initial": None}, "volume": 0} for well in labware_def["wells"]}
+            well_defaults = {
+                                well: {
+                                    "substance": {"initial": None},
+                                    "volume": 0,
+                                    **({"position": plate[well], "max_volume": plate_info["max_volume"]} if not is_stock else {})
+                                }
+                                for well in labware_def["wells"]
+                            }
             if plate_info.get("content"):
                 for well, well_data in plate_info["content"].items():
                     well_defaults[well]["volume"] = well_data["volume"]
                     well_defaults[well]["substance"] = {"initial": well_data["substance"]}
+
                     if not is_stock:
                         well_defaults[well]["max_volume"] = plate_info["max_volume"]
+                        well_defaults[well]["position"] = plate[well]
 
             # Store well data
             if is_stock:
@@ -76,7 +91,7 @@ class Opentrons:
                         {"position": plate[well], "volume": data["volume"]}
                     )
             else:
-                self.core_amounts[plate_name] = well_defaults  # Stores plate data
-                self.core_plates[plate_name] = plate  # Stores plate objects
+                self.core_amounts[plate_name] = well_defaults  
+                self.core_plates[plate_name] = plate  
 
     
