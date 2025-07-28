@@ -3,6 +3,13 @@ from opentrons_drivers.agent.base_agent import Agent
 from pathlib import Path
 import json
 
+metadata = {
+    "protocolName": "ot_agent",
+    "author": "Aleksandr Ostudin",
+    "description": "Activate OT based on query msg",
+    "apiLevel": "2.13",
+}
+
 with open(Path('postbox', 'task.json')) as f:
     task = json.load(f)
     to_do = Path('protocols', task['who'], task['protocol'])
