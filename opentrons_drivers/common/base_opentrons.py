@@ -1,49 +1,94 @@
 from opentrons import protocol_api
 from collections import defaultdict
 import json
-from pprint import pprint
-import time
+from opentrons.protocol_api.instrument_context import InstrumentContext
+from opentrons.protocol_api.labware import Labware
+from typing import Dict, List, cast
+from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo
+from pathlib import Path
+
 
 class Opentrons:
-    """TODO: add docstring."""
+    """BaseRobot class that stores state and hardware of the machine"""
 
-    def __init__(self, protocol: protocol_api.ProtocolContext, base_config: dict[str, str]) -> None:
-        """TODO: add docstring."""
+    def __init__(self, protocol: protocol_api.ProtocolContext, 
+                 base_config: BaseConfig) -> None:
+        """
+        Initialize the robot with base configuration of the hardware and layout.
+
+        Parameters
+        ----------
+        protocol : ProtocolContext
+            Opentrons API object for interacting with the robot.
+        
+        base_config : BaseConfig
+            Hardware and layout configuration for Opentrons (pipettes, labware, etc.).
+        """
         self.protocol = protocol
         self.base_config = base_config
-        # TODO: type hint for these attributes
-        self.core_plates = {}  # Plates where substances are mixed
-        self.support_plates = []  # Tipracks, etc.
-        self.stock_amounts = defaultdict(list)  # Stock well information
-        self.core_amounts = defaultdict(list)  # Core well information
+
+        self.core_plates: Dict[str, Labware] = {}  # Plates where substances are mixed
+        self.support_plates: List[Labware] = []  # Tipracks, etc.
+        self.stock_amounts: Dict[str, List[StockWell]] = defaultdict(list)  # Stock well information
+        self.core_amounts: Dict[str, Dict[str, CoreWell]] = defaultdict(dict)  # Core well information
+        self.pipettes: Dict[str, InstrumentContext] = {}  # Pipette objects
 
         # Set gantry speeds
         for ax in ["X", "Y", "Z"]:
             self.protocol.max_speeds[ax] = base_config.get(f"gantry_speed_{ax}", 400)
 
         # Load core plates (returns plates + fills core_amounts)
-        self._load_assigned_plates("core_assigned.json", is_stock=False)
+        self._load_assigned_plates("core_plates", is_stock=False)
 
         # Load stock plates (ONLY fills stock_amounts, no plate objects)
-        self._load_assigned_plates("stock_assigned.json", is_stock=True)
-        self.pipettes = {}
+        self._load_assigned_plates("stock_plates", is_stock=True)
+
+        # Load pipettes
         pipettes = self.base_config["pipettes"]
         for mount, pipette in pipettes.items():
-            unit = protocol.load_instrument(pipette['name'], mount=mount)
-            unit.swelled = None 
-            unit.max_volume = pipette.get('max_volume', 1000)
-            unit.min_volume = unit.max_volume * 0.1  # Default to 10% of max volume
+            unit = protocol.load_instrument(pipette['model'], mount=mount)
+            unit.swelled = None # type: ignore[attr-defined]
             self.pipettes[mount] = unit
 
-    def _load_assigned_plates(self, filename: str, is_stock: bool) -> None:
-        """Load assigned plates from JSON, ensuring missing well values are filled.
+    def _load_assigned_plates(self, name: str, is_stock: bool) -> None:
+        """
+        Load plates from configuration and update system state.
 
-        Resulting dict is like { 'sub_0': [{'position':object of opentron plates, 'amount': 5000}],
-                                 'sub_1': [{'position':object of opentron plates, 'amount': 4999}] }
+        This method loads either:
+        - **core plates**, which are represented in both `core_plates` and `core_amounts`,
+        - or **stock plates**, which populate the `stock_amounts` dictionary.
+
+        All plates are defined in the base config under the given `name`, 
+        and are expected to reference either a labware type string (stock plates)
+        or a custom definition file (core plates).
+
+        Resulting Structures
+        ---------------------
+        * self.core_amounts:
+            Dict[plate_name, Dict[well_name, CoreWell]]
+            Each well contains:
+                • position: Well object
+                • volume: float
+                • substance: {"initial": Optional[str]}
+                • max_volume: float
+
+        * self.stock_amounts:
+            Dict[substance_name, List[StockWell]]
+            Each StockWell contains:
+                • position: Well object
+                • volume: float
+
+        Parameters
+        -----------
+        name : str
+            The key in `self.base_config` pointing to the plate assignment dictionary.
+
+        is_stock : bool
+            Whether to treat the plates as stock (True) or core (False).
+            This affects both how the plate is parsed and where it is stored.
         """
         # TODO: refactor this method to simplify the logic
-        with open(filename) as assigned_file:
-            assigned_data = json.load(assigned_file)
+        assigned_data = cast(Dict[str, PlateInfo], self.base_config.get(name, {}))
 
         for plate_name, plate_info in assigned_data.items():
             offset = plate_info.get("offset", {})
@@ -54,29 +99,39 @@ class Opentrons:
                 continue
 
             # Load labware definition
-            with open(plate_info["type"]) as labware_file:
+            with open(Path('plates', plate_info["type"])) as labware_file:
                 labware_def = json.load(labware_file)
 
             plate = self.protocol.load_labware_from_definition(labware_def=labware_def, location=plate_info["place"])
             plate.set_offset(x=offset.get('x', 0), y=offset.get('y', 0), z=offset.get('z', 0))
 
             # Ensure all wells have substance and amount values
-            well_defaults = {well: {"substance": {"initial": None}, "volume": 0} for well in labware_def["wells"]}
+            well_defaults: Dict[str, CoreWell] = {
+                                well: {
+                                    "substance": {"initial": None},
+                                    "volume": 0,
+                                    **({"position": plate[well], "max_volume": plate_info["max_volume"]} if not is_stock else {})
+                                }
+                                for well in labware_def["wells"]
+                            }
             if plate_info.get("content"):
                 for well, well_data in plate_info["content"].items():
                     well_defaults[well]["volume"] = well_data["volume"]
                     well_defaults[well]["substance"] = {"initial": well_data["substance"]}
+
                     if not is_stock:
                         well_defaults[well]["max_volume"] = plate_info["max_volume"]
+                        well_defaults[well]["position"] = plate[well]
 
             # Store well data
             if is_stock:
                 for well, data in well_defaults.items():
-                    self.stock_amounts[data["substance"]["initial"]].append(
+                    key = cast(str, data["substance"]["initial"])
+                    self.stock_amounts[key].append(
                         {"position": plate[well], "volume": data["volume"]}
                     )
             else:
-                self.core_amounts[plate_name] = well_defaults  # Stores plate data
-                self.core_plates[plate_name] = plate  # Stores plate objects
+                self.core_amounts[plate_name] = well_defaults  
+                self.core_plates[plate_name] = plate  
 
     
