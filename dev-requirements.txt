@@ -51,7 +51,7 @@ pytest-cov==7.0.0
     # via opentrons_drivers (pyproject.toml)
 pytest-mock==3.15.1
     # via opentrons_drivers (pyproject.toml)
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via pre-commit
 ruff==0.13.2
     # via opentrons_drivers (pyproject.toml)
