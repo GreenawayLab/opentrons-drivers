@@ -1,29 +1,92 @@
 import time
-import os
-from inspect import signature
-import sys
+from typing import cast
+from typing import Dict, Callable, List, TypeVar
+from opentrons_drivers.common.custom_types import ActionFn
+from opentrons_drivers.common.custom_types import StockWell, CoreWell, StaticCtx, JSONType
+from opentrons.protocol_api.labware import Well
+from opentrons.protocol_api.instrument_context import InstrumentContext
 
-def call_with_needed(fn, **kwargs):
-    needed = signature(fn).parameters
-    return fn(**{k: v for k, v in kwargs.items() if k in needed})
+#---------- Registries of possible functions ----------
+
+ACTION_REGISTRY: dict[str, ActionFn] = {}  # is exported
+LIQUID_METHODS: dict[str, Callable[..., object]] = {}
+
+F = TypeVar("F", bound=Callable[..., object])
+
+def make_registry_decorator[T: Callable[..., object]](
+   registry: dict[str, T]
+) -> Callable[[str], Callable[[T], T]]:
+   """Create a decorator factory for registering functions in a registry.
+   
+   Args:
+       registry: Dictionary to store registered functions
+       
+   Returns:
+       A decorator factory that creates registration decorators
+   """
+   def register(name: str) -> Callable[[T], T]:
+       """Create a decorator that registers a function with the given name.
+       
+       Args:
+           name: Name to register the function under
+           
+       Returns:
+           Decorator that registers the function and returns it unchanged
+       """
+       def decorator(fn: T) -> T:
+           registry[name] = fn
+           return fn
+       return decorator
+   return register
+
+register_action = make_registry_decorator(ACTION_REGISTRY)
+register_liquid_method = make_registry_decorator(LIQUID_METHODS)
 
 #---------- Liquid transfer low-level functions ----------
 
-def _liquid_batching(pipette, amt: float) -> None:
-    """This function universally receives from where to where move what.
+def _liquid_batching(pipette: InstrumentContext, amt: float) -> List[float]:
+    """
+    Split a large transfer volume into pipette-sized batches.
 
-    Assumes that the tip is on and everything is tip-top (hah).
+    Parameters:
+        pipette (InstrumentContext): The pipette being used.
+        amt (float): Total volume to transfer.
+
+    Returns:
+        List[float]: A list of individual volumes to transfer in sequence.
     """
     max_vol = pipette.max_volume
-    amts = [max_vol for i in range(int(amt // max_vol))]
+    amts = [max_vol for _ in range(int(amt // max_vol))]
     res = amt % max_vol
     if res > 0:
         amts.append(res)
-    # we have sliced the vol to discrete additions by max vols
-    # e.g. 2.73ml -> [0.95, 0.95, 0.83]
+
     return amts
 
-def _liquid_transfer(pipette, to, fr, amount:float):
+"""
+    All liquid transfer methods must have the same base signature:
+    pipette: InstrumentContext, to: Well, fr: Well, amount: float
+    
+    Anything else can be passed as keyword arguments
+    e.g. rate, iterations, etc. as **kwargs
+
+"""
+@register_liquid_method("_liquid_transfer")
+def _liquid_transfer(pipette: InstrumentContext, 
+                     to: Well, fr: Well, 
+                     amount: float) -> None:
+    """
+    Basic liquid transfer method.
+
+    Parameters:
+        pipette (InstrumentContext): Pipette to use.
+        to (Well): Target well.
+        fr (Well): Source well.
+        amount (float): Total volume to transfer.
+
+    Returns:
+        None
+    """
     amts = _liquid_batching(pipette, amount)
     for a in amts:
         pipette.aspirate(a, fr)
@@ -31,7 +94,26 @@ def _liquid_transfer(pipette, to, fr, amount:float):
         pipette.dispense(location=to.top(z=1))
         pipette.blow_out(location=to.top(z=1))
 
-def _viscous_liquid_transfer(pipette, to, fr, amount:float, rate):
+@register_liquid_method("_viscous_liquid_transfer")
+def _viscous_liquid_transfer(pipette: InstrumentContext, 
+                             to: Well, fr: Well, 
+                             amount: float, 
+                             rate: float) -> None:
+    """
+    Transfer method for viscous liquids.
+
+    Slows down aspiration and dispense speeds, includes touch tips.
+
+    Parameters:
+        pipette (InstrumentContext): Pipette to use.
+        to (Well): Target well.
+        fr (Well): Source well.
+        amount (float): Volume to transfer.
+        rate (float): Aspiration/dispense rate multiplier.
+
+    Returns:
+        None
+    """
     amts = _liquid_batching(pipette, amount)
     for a in amts:
         pipette.move_to(fr.bottom(z=3))
@@ -46,45 +128,60 @@ def _viscous_liquid_transfer(pipette, to, fr, amount:float, rate):
         pipette.dispense(a, location=fr.top(z=-1), rate=rate)
         pipette.blow_out(location=fr.top(z=1))
 
-#---------- High-level liquid transfer ----------
+#---------- High-level liquid transfer helpers (non-exportable) ----------
 
-def stock_validation(stock_amounts, what: str, amt: float, min_vol) -> None:
-        """This function checks that if stocks are addressed we have a sufficient amount of whatever is needed."""
-        approved = False
-
-        while not approved:
-            try:
-                substance = stock_amounts[what][0]
-            except:  # NOQA  # TODO: specify the exception type
-                print(stock_amounts)
-                raise RuntimeError(f"Substance {what} not found in deck.")
-
-            if amt > (substance["volume"] - min_vol):
-                print(
-                    f"Volume of {what} needed is greater than the volume in the well.\n"
-                    f"Well {substance['position']} is now out of scope. \n"
-                    f"Trying again by moving to the next well containing {what}."
-                )
-                # Change the well plate to move from
-                stock_amounts[what].pop(0)
-                if len(stock_amounts[what]) == 0:
-                    raise RuntimeError(f"No more {what} left on the deck.")
-            else:
-                approved = True
-
-def well_validation(core_amounts, plate: list[str], amt: float, role: str) -> None:
+def _stock_validation(stock_amounts: Dict[str, List[StockWell]], 
+                     what: str, amt: float, min_vol: float) -> None:
     """
-    Validates a well for use as source or receiver.
+    Validate that a stock well contains enough liquid for a transfer.
 
     Parameters:
-        plate: list[str] — [plate_name, well_label]
-        amt: float — the amount to move
-        role: str — either "source" or "receiver"
+        stock_amounts (Dict[str, List[StockWell]]): Current stock volume per substance.
+        what (str): Name of the substance to draw.
+        amt (float): Required volume.
+        min_vol (float): Minimum residual volume required after draw.
 
     Raises:
-        RuntimeError if validation fails.
+        RuntimeError: If the stock is insufficient.
     """
-    plate_name, well = plate
+    approved = False
+
+    while not approved:
+        try:
+            substance = stock_amounts[what][0]
+        except:  # NOQA  # TODO: specify the exception type
+            print(stock_amounts)
+            raise RuntimeError(f"Substance {what} not found in deck.")
+
+        if amt > (substance["volume"] - min_vol):
+            print(
+                f"Volume of {what} needed is greater than the volume in the well.\n"
+                f"Well {substance['position']} is now out of scope. \n"
+                f"Trying again by moving to the next well containing {what}."
+            )
+            # Change the well plate to move from
+            stock_amounts[what].pop(0)
+            if len(stock_amounts[what]) == 0:
+                raise RuntimeError(f"No more {what} left on the deck.")
+        else:
+            approved = True
+
+def _well_validation(core_amounts: Dict[str, Dict[str, CoreWell]], 
+                    plate_requested: list[str], amt: float, role: str) -> None:
+    """
+    Validate that a core well can send or receive a volume.
+
+    Parameters:
+        core_amounts (Dict[str, Dict[str, CoreWell]]): Volume info per well.
+        plate_requested (list[str]): [plate_name, well_label].
+        amt (float): Volume to move.
+        role (str): "source" or "receiver".
+
+    Raises:
+        RuntimeError: If well volume is too low or overflows.
+        ValueError: If role is unknown.
+    """
+    plate_name, well = plate_requested
     try:
         well_data = core_amounts[plate_name][well]
     except KeyError:
@@ -106,16 +203,25 @@ def well_validation(core_amounts, plate: list[str], amt: float, role: str) -> No
         raise ValueError(f"Unknown validation role '{role}'. Expected 'source' or 'receiver'.")
 
 
-def swell_tip(pipette, stock_amounts, core_plates, with_what: list[str]) -> None:
-    """Better wetting I guess so no drip and better precision.
+def _swell_tip(pipette: InstrumentContext, stock_amounts: Dict[str, List[StockWell]], 
+              core_amounts: Dict[str, Dict[str, CoreWell]], with_what: list[str]) -> None:
+    """
+    Pre-wet the tip with the liquid to reduce dripping and improve accuracy.
 
-    Sacred knowledge inherited from an elder, more developed civilization.
+    Parameters:
+        pipette (InstrumentContext): Pipette to pre-wet.
+        stock_amounts (Dict[str, List[StockWell]]): Available stock wells.
+        core_amounts (Dict[str, Dict[str, CoreWell]]): Available core wells.
+        with_what (list[str]): [substance] or [plate, well].
+
+    Raises:
+        ValueError: If input is not 1 or 2 parts.
     """
     if len(with_what) == 1:
         spot = stock_amounts[with_what[0]][0]["position"]
         name = with_what[0]
     elif len(with_what) == 2:
-        spot = core_plates[with_what[0]][with_what[1]]
+        spot = core_amounts[with_what[0]][with_what[1]]["position"]
         name = f"{with_what[0]}_{with_what[1]}"
     else:
         raise ValueError("Either use [stock_substance_name] or [core_plate_name, well].")
@@ -125,115 +231,140 @@ def swell_tip(pipette, stock_amounts, core_plates, with_what: list[str]) -> None
     time.sleep(10)
     pipette.move_to(spot.top())
     pipette.dispense(vol, location=spot)
-    pipette.swelled = name
+    pipette.swelled = name # type: ignore[attr-defined]
 
-def transfer_execution(pipettes, core_plates, 
-                       core_amounts, stock_amounts, 
-                       source: list[str], 
-                       receiver: list[str], 
-                       amount: float,
-                       method: str = "_liquid_transfer",
-                       pipette_mount: str = "left",
-                       swell: bool = True,
-                       tip_cycle: bool = True,
-                       **extra) -> None:
-    
-    """Handles liquid transfers between wells.
+#---------- Complex exportable functions ----------
 
-    - From **stock** → Core well: Validates stock, updates `core_amounts`.
-    - From **core well** → Another core well: Validates both source & receiver, updates `core_amounts`.
+"""
+    All exportable functions must have the same base signature:
+    ctx: StaticCtx, arg: dict[str, JSONType]
+
+    ctx contains the system state: plates, amounts of liquids, pipettes, etc.
+    arg is an argument to the function: what to do with this action.
+
+    It is a function's responsibility to unwrap the ctx and the arg.
+
+    All exportable functions must return True upon completion.
+
+"""
+
+@register_action("transfer_execution")
+def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """
-    pipette = pipettes[pipette_mount]
+    Perform a liquid transfer and update bookkeeping.
 
+    Modes:
+        1. Stock → Core:
+            - source == ["substance_name"]
+            - Validates stock volume, updates `stock_amounts` and `core_amounts`.
+
+        2. Core → Core:
+            - source == ["core_plate", "well_label"]
+            - Validates both wells, updates `core_amounts`.
+
+    Parameters:
+        ctx (StaticCtx): Device state (pipettes, volumes, plates).
+        arg (dict[str, JSONType]): Instruction arguments.
+            - source: list[str]
+            - receiver: list[str]
+            - amount: float
+            - method: str = "_liquid_transfer"
+            - pipette_mount: str = "left"
+            - swell: bool = True
+            - tip_cycle: bool = True
+            - ...plus any method-specific kwargs
+
+    Returns:
+        bool: True upon successful transfer.
+    """
+
+    # shared hardware and tables
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+    pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
+    core_amounts = ctx["core_amounts"]
+    stock_amounts = ctx["stock_amounts"]
+
+    # strongly typed payload 
+    source   = cast(list[str],  arg["source"])
+    receiver = cast(list[str],  arg["receiver"])
+    amount   = cast(float,      arg["amount"])
+
+    method = cast(str, arg.get("method", "_liquid_transfer"))
+    swell  = cast(bool, arg.get("swell", True))
+    tip_cycle = cast(bool, arg.get("tip_cycle", True))
+
+    # extra kwargs for specialised methods
+    extra = {k: v for k, v in arg.items()
+             if k not in {"source", "receiver", "amount",
+                          "method", "pipette_mount", "swell", "tip_cycle"}}
+
+    # get low-level transfer function
+    transfer_fn = LIQUID_METHODS.get(method)
+    if transfer_fn is None:
+        raise ValueError(f"Unknown transfer method '{method}'. "
+                         f"Available: {list(LIQUID_METHODS)}")
+
+    # prep tip
     if tip_cycle:
         pipette.pick_up_tip()
 
-    this_module = sys.modules[__name__]          # module where funcs live
-    try:
-        transfer_fn = getattr(this_module, method)
-    except AttributeError:
-        raise ValueError(
-            f"Unknown transfer method '{method}'. "
-            f"Defined methods: {[n for n in dir(this_module) if n.startswith('_') and 'transfer' in n]}"
-        )
-    
-    # Receiver is always in a core plate
-    to = core_plates[receiver[0]][receiver[1]]
+    # receiver objects
+    recv_data: CoreWell = core_amounts[receiver[0]][receiver[1]]
+    recv_well: Well     = recv_data["position"]
 
+    # STOCK → CORE 
     if len(source) == 1:
-        # Stock transfer case
-        well_validation(core_amounts, receiver, amount, "receiver")
-        what = source[0]
-        stock_validation(stock_amounts, what, amount, pipette.min_volume)
-        substance = stock_amounts[what][0]
-        fr = substance["position"]
+        sub_name = source[0]
+
+        _well_validation(core_amounts, receiver, amount, "receiver")
+        _stock_validation(stock_amounts, sub_name, amount, pipette.min_volume)
+
+        stock_entry = stock_amounts[sub_name][0]
+        stock_well: Well = stock_entry["position"]
+
         if swell:
-            swell_tip(pipette, stock_amounts, core_plates, [what])
+            _swell_tip(pipette, stock_amounts, core_amounts, [sub_name])
 
-        call_with_needed(
-        transfer_fn,
-        pipette=pipette,
-        to=to,
-        fr=fr,
-        amount=amount,
-        **extra,
-                        )
+        transfer_fn(pipette=pipette,
+                    to=recv_well,
+                    fr=stock_well,
+                    amount=amount,
+                    **extra)
 
-        # Update stock volume
-        substance["volume"] -= amount
-
-        # Update receiver well in core_amounts
-        to["volume"] += amount
-
-        # Track history with timestamp
+        # bookkeeping
+        stock_entry["volume"]   -= amount
+        recv_data["volume"]     += amount
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        to["substance"][timestamp] = (
-            what,
-            substance["position"].well_name,
-            amount,
-        )
+        recv_data["substance"][timestamp] = (sub_name, stock_well.well_name, amount)
 
+    # CORE → CORE 
     elif len(source) == 2:
-        # Core-to-core transfer case
-        fr = core_plates[source[0]][source[1]]
+        src_data: CoreWell = core_amounts[source[0]][source[1]]
+        src_well: Well     = src_data["position"]
 
-        well_validation(core_amounts, source, amount, "source")
-        well_validation(core_amounts, receiver, amount, "receiver")
+        _well_validation(core_amounts, source,   amount, "source")
+        _well_validation(core_amounts, receiver, amount, "receiver")
 
         if swell:
-            swell_tip(pipette, stock_amounts, core_plates, source)
-        
-        call_with_needed(
-        transfer_fn,
-        pipette=pipette,
-        to=to,
-        fr=fr,
-        amount=amount,
-        **extra,
-                        )
+            _swell_tip(pipette, stock_amounts, core_amounts, source)
 
-        # Update source and receiver well volumes
+        transfer_fn(pipette=pipette,
+                    to=recv_well,
+                    fr=src_well,
+                    amount=amount,
+                    **extra)
 
-        fr["volume"] -= amount
-        to["volume"] += amount
-
-        # Track history with timestamp
+        # bookkeeping
+        src_data["volume"]  -= amount
+        recv_data["volume"] += amount
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        to["substance"][timestamp] = (
-                *source,
-                amount,
-            )
-        fr["substance"][timestamp] = (
-                *receiver,
-                -amount,
-            )
+        recv_data["substance"][timestamp] = (source[0], source[1], amount)
+        src_data["substance"][timestamp]  = (receiver[0], receiver[1], -amount)
+
     else:
-        raise ValueError(
-                "Wrong transfer parameters. \n"
-                "Either use a masked stock name (e.g. source=['alc_1']) \n"
-                "or core coordinates (e.g. source=['core_0', 'A1'])."
-            )
+        raise ValueError("`source` must be ['substance'] or ['plate', 'well'].")
+
     if tip_cycle:
         pipette.drop_tip()
-    
+
     return True
