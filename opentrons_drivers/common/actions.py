@@ -13,31 +13,13 @@ LIQUID_METHODS: dict[str, Callable[..., object]] = {}
 
 F = TypeVar("F", bound=Callable[..., object])
 
-def make_registry_decorator[T: Callable[..., object]](
-   registry: dict[str, T]
-) -> Callable[[str], Callable[[T], T]]:
-   """Create a decorator factory for registering functions in a registry.
-   
-   Args:
-       registry: Dictionary to store registered functions
-       
-   Returns:
-       A decorator factory that creates registration decorators
-   """
-   def register(name: str) -> Callable[[T], T]:
-       """Create a decorator that registers a function with the given name.
-       
-       Args:
-           name: Name to register the function under
-           
-       Returns:
-           Decorator that registers the function and returns it unchanged
-       """
-       def decorator(fn: T) -> T:
-           registry[name] = fn
-           return fn
-       return decorator
-   return register
+def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[[F], F]]: # type: ignore[misc]
+    def register(name: str) -> Callable[[F], F]: # type: ignore[misc]
+        def decorator(fn: F) -> F: # type: ignore[misc]
+            registry[name] = fn
+            return fn
+        return decorator
+    return register
 
 register_action = make_registry_decorator(ACTION_REGISTRY)
 register_liquid_method = make_registry_decorator(LIQUID_METHODS)
@@ -197,7 +179,7 @@ def _well_validation(core_amounts: Dict[str, Dict[str, CoreWell]],
         if (well_data["volume"] + amt) > well_data["max_volume"]:
             raise RuntimeError(
                 f"Overflow risk: {plate_name} {well} has {well_data['volume']}μL, "
-                f"adding {amt}μL exceeds max {well_data["max_volume"]}μL."
+                f"adding {amt}μL exceeds max {well_data['max_volume']}μL."
             )
     else:
         raise ValueError(f"Unknown validation role '{role}'. Expected 'source' or 'receiver'.")

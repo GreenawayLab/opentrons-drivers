@@ -31,11 +31,11 @@ class Agent():
         self._write_status("operating")
         self.agent_config = agent_config
         self.robot = Opentrons(protocol, base_config)
-        self.static_ctx: StaticCtx = Dict(
-                                core_amounts=self.robot.core_amounts,
-                                stock_amounts=self.robot.stock_amounts,
-                                pipettes=self.robot.pipettes,
-                                         )
+        self.static_ctx: StaticCtx = {
+                                'core_amounts':self.robot.core_amounts,
+                                'stock_amounts':self.robot.stock_amounts,
+                                'pipettes':self.robot.pipettes,
+                                        }
 
     def _invoke(self, func_name: str, ctx: StaticCtx, arg: Dict[str, JSONType]) -> bool:
         """
