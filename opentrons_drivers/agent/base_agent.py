@@ -35,7 +35,8 @@ class Agent():
                                 'core_amounts':self.robot.core_amounts,
                                 'stock_amounts':self.robot.stock_amounts,
                                 'pipettes':self.robot.pipettes,
-                                        }
+                                'agent_state': {}
+                                     }
 
     def _invoke(self, func_name: str, ctx: StaticCtx, arg: Dict[str, JSONType]) -> bool:
         """
@@ -142,4 +143,4 @@ class Agent():
                             self._write_status("complete") 
                     except Exception as e:
                         self._write_status("operating", error=e) 
-            time.sleep(1)
+            time.sleep(1.5)

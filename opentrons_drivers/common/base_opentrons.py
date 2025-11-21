@@ -163,6 +163,7 @@ class Opentrons:
                 tip_racks=self.support_plates if self.support_plates else None,
             )
             unit.swelled = None  # required for compatibility with actions
+            unit.max_volume = unit.max_volume * 0.8 # type: ignore[attr-defined]
             self.pipettes[mount] = unit
 
     # ----------------------------------------------------------------------

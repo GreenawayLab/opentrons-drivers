@@ -70,3 +70,9 @@ class BaseConfig(TypedDict):
 class AgentConfig(TypedDict):
     trigger: str  # e.g. "totally_not_a_file.json"
     action: str   # e.g. "transfer_liquid"
+
+class AgentState(TypedDict, total=False):
+    plate: str | None
+    well: str | None
+    last_action: str | None             # registry key
+    timestamp: float                    # when the last action happened

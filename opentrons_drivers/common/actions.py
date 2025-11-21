@@ -1,10 +1,11 @@
 import time
 from typing import cast
-from typing import Dict, Callable, List, TypeVar
+from typing import Dict, Callable, TypeVar
 from opentrons_drivers.common.custom_types import ActionFn
-from opentrons_drivers.common.custom_types import StockWell, CoreWell, StaticCtx, JSONType
+from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
 from opentrons.protocol_api.labware import Well
 from opentrons.protocol_api.instrument_context import InstrumentContext
+import opentrons_drivers.common.helpers as help
 
 #---------- Registries of possible functions ----------
 
@@ -24,26 +25,6 @@ def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[
 register_action = make_registry_decorator(ACTION_REGISTRY)
 register_liquid_method = make_registry_decorator(LIQUID_METHODS)
 
-#---------- Liquid transfer low-level functions ----------
-
-def _liquid_batching(pipette: InstrumentContext, amt: float) -> List[float]:
-    """
-    Split a large transfer volume into pipette-sized batches.
-
-    Parameters:
-        pipette (InstrumentContext): The pipette being used.
-        amt (float): Total volume to transfer.
-
-    Returns:
-        List[float]: A list of individual volumes to transfer in sequence.
-    """
-    max_vol = pipette.max_volume
-    amts = [max_vol for _ in range(int(amt // max_vol))]
-    res = amt % max_vol
-    if res > 0:
-        amts.append(res)
-
-    return amts
 
 """
     All liquid transfer methods must have the same base signature:
@@ -53,8 +34,8 @@ def _liquid_batching(pipette: InstrumentContext, amt: float) -> List[float]:
     e.g. rate, iterations, etc. as **kwargs
 
 """
-@register_liquid_method("_liquid_transfer")
-def _liquid_transfer(pipette: InstrumentContext, 
+@register_liquid_method("basic_liquid_transfer")
+def basic_liquid_transfer(pipette: InstrumentContext, 
                      to: Well, fr: Well, 
                      amount: float) -> None:
     """
@@ -69,15 +50,63 @@ def _liquid_transfer(pipette: InstrumentContext,
     Returns:
         None
     """
-    amts = _liquid_batching(pipette, amount)
+    amts = help.liquid_batching(pipette, amount)
     for a in amts:
         pipette.aspirate(a, fr)
         pipette.air_gap(20)
         pipette.dispense(location=to.top(z=1))
         pipette.blow_out(location=to.top(z=1))
 
-@register_liquid_method("_viscous_liquid_transfer")
-def _viscous_liquid_transfer(pipette: InstrumentContext, 
+
+@register_liquid_method("advanced_liquid_transfer")
+def advanced_liquid_transfer(pipette: InstrumentContext,
+                    to: Well, 
+                    fr: Well, 
+                    amt: float, 
+                    airgap: float, 
+                    touchtip: int, 
+                    blowout: int, 
+                    asprate: float, 
+                    disrate: float
+                    ) -> None:
+        """Perform a liquid transfer between two wells.
+
+        Handles chunking volumes greater than pipette capacity into multiple
+        aspiration/dispense cycles.
+
+        Args:
+            to (Well): Destination well.
+            fr (Well): Source well.
+            amt (float): Volume in µL to transfer.
+            airgap (float): Volume in µL of airgap.
+            touchtip (int): Number of touch-tip cycles.
+            blowout (int): Number of blowout cycles.
+            asprate (float): Aspiration rate multiplier.
+            disrate (float): Dispense rate multiplier.
+
+        Returns:
+            None
+        """
+
+        amts = help.liquid_batching(pipette, amt)
+        for a in amts:
+            can = pipette.max_volume - a
+            initial_ag = min(can * 0.3 * airgap, can)
+            midway_ag = min(can * 0.15 * (1-airgap), can-initial_ag)
+            pipette.aspirate(a, fr.bottom(z=2), rate=asprate) 
+            [pipette.touch_tip(fr) for _ in range(touchtip)] 
+            pipette.air_gap(initial_ag) 
+            pipette.move_to(help.midpoint(fr,to)) 
+            pipette.air_gap(midway_ag, in_place = True) # type: ignore[call-arg]
+            pipette.dispense(a, location=to.top(z=1), rate=disrate) 
+            [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
+            [pipette.touch_tip(to) for _ in range(touchtip)]
+        
+        pipette.move_to(fr.top(z=5))
+
+
+@register_liquid_method("viscous_liquid_transfer")
+def viscous_liquid_transfer(pipette: InstrumentContext, 
                              to: Well, fr: Well, 
                              amount: float, 
                              rate: float) -> None:
@@ -96,7 +125,7 @@ def _viscous_liquid_transfer(pipette: InstrumentContext,
     Returns:
         None
     """
-    amts = _liquid_batching(pipette, amount)
+    amts = help.liquid_batching(pipette, amount)
     for a in amts:
         pipette.move_to(fr.bottom(z=3))
         time.sleep(10)
@@ -110,110 +139,6 @@ def _viscous_liquid_transfer(pipette: InstrumentContext,
         pipette.dispense(a, location=fr.top(z=-1), rate=rate)
         pipette.blow_out(location=fr.top(z=1))
 
-#---------- High-level liquid transfer helpers (non-exportable) ----------
-
-def _stock_validation(stock_amounts: Dict[str, List[StockWell]], 
-                     what: str, amt: float, min_vol: float) -> None:
-    """
-    Validate that a stock well contains enough liquid for a transfer.
-
-    Parameters:
-        stock_amounts (Dict[str, List[StockWell]]): Current stock volume per substance.
-        what (str): Name of the substance to draw.
-        amt (float): Required volume.
-        min_vol (float): Minimum residual volume required after draw.
-
-    Raises:
-        RuntimeError: If the stock is insufficient.
-    """
-    approved = False
-
-    while not approved:
-        try:
-            substance = stock_amounts[what][0]
-        except:  # NOQA  # TODO: specify the exception type
-            print(stock_amounts)
-            raise RuntimeError(f"Substance {what} not found in deck.")
-
-        if amt > (substance["volume"] - min_vol):
-            print(
-                f"Volume of {what} needed is greater than the volume in the well.\n"
-                f"Well {substance['position']} is now out of scope. \n"
-                f"Trying again by moving to the next well containing {what}."
-            )
-            # Change the well plate to move from
-            stock_amounts[what].pop(0)
-            if len(stock_amounts[what]) == 0:
-                raise RuntimeError(f"No more {what} left on the deck.")
-        else:
-            approved = True
-
-def _well_validation(core_amounts: Dict[str, Dict[str, CoreWell]], 
-                    plate_requested: list[str], amt: float, role: str) -> None:
-    """
-    Validate that a core well can send or receive a volume.
-
-    Parameters:
-        core_amounts (Dict[str, Dict[str, CoreWell]]): Volume info per well.
-        plate_requested (list[str]): [plate_name, well_label].
-        amt (float): Volume to move.
-        role (str): "source" or "receiver".
-
-    Raises:
-        RuntimeError: If well volume is too low or overflows.
-        ValueError: If role is unknown.
-    """
-    plate_name, well = plate_requested
-    try:
-        well_data = core_amounts[plate_name][well]
-    except KeyError:
-        raise RuntimeError(f"Core well {plate_name} {well} not found.")
-
-    if role == "source":
-        if well_data["volume"] < amt:
-            raise RuntimeError(
-                f"Insufficient volume in {plate_name} {well}. "
-                f"Available: {well_data['volume']}μL, required: {amt}μL."
-            )
-    elif role == "receiver":
-        if (well_data["volume"] + amt) > well_data["max_volume"]:
-            raise RuntimeError(
-                f"Overflow risk: {plate_name} {well} has {well_data['volume']}μL, "
-                f"adding {amt}μL exceeds max {well_data['max_volume']}μL."
-            )
-    else:
-        raise ValueError(f"Unknown validation role '{role}'. Expected 'source' or 'receiver'.")
-
-
-def _swell_tip(pipette: InstrumentContext, stock_amounts: Dict[str, List[StockWell]], 
-              core_amounts: Dict[str, Dict[str, CoreWell]], with_what: list[str]) -> None:
-    """
-    Pre-wet the tip with the liquid to reduce dripping and improve accuracy.
-
-    Parameters:
-        pipette (InstrumentContext): Pipette to pre-wet.
-        stock_amounts (Dict[str, List[StockWell]]): Available stock wells.
-        core_amounts (Dict[str, Dict[str, CoreWell]]): Available core wells.
-        with_what (list[str]): [substance] or [plate, well].
-
-    Raises:
-        ValueError: If input is not 1 or 2 parts.
-    """
-    if len(with_what) == 1:
-        spot = stock_amounts[with_what[0]][0]["position"]
-        name = with_what[0]
-    elif len(with_what) == 2:
-        spot = core_amounts[with_what[0]][with_what[1]]["position"]
-        name = f"{with_what[0]}_{with_what[1]}"
-    else:
-        raise ValueError("Either use [stock_substance_name] or [core_plate_name, well].")
-    
-    vol = pipette.max_volume*0.3
-    pipette.aspirate(vol, spot)
-    time.sleep(10)
-    pipette.move_to(spot.top())
-    pipette.dispense(vol, location=spot)
-    pipette.swelled = name # type: ignore[attr-defined]
 
 #---------- Complex exportable functions ----------
 
@@ -252,8 +177,9 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
             - amount: float
             - method: str = "_liquid_transfer"
             - pipette_mount: str = "left"
-            - swell: bool = True
-            - tip_cycle: bool = True
+            - swell_time: float = 0.0
+            - swell_cycle: int = 1
+            - tip_cycle: tuple[bool, bool] = [True, True]
             - ...plus any method-specific kwargs
 
     Returns:
@@ -271,14 +197,29 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     receiver = cast(list[str],  arg["receiver"])
     amount   = cast(float,      arg["amount"])
 
-    method = cast(str, arg.get("method", "_liquid_transfer"))
-    swell  = cast(bool, arg.get("swell", True))
-    tip_cycle = cast(bool, arg.get("tip_cycle", True))
+    method = cast(str, arg.get("method", "liquid_transfer"))
+    tips_raw = arg.get("tip_cycle", (True, True))
+
+    if not (
+        isinstance(tips_raw, (list, tuple))
+        and len(tips_raw) == 2
+        and all(isinstance(x, bool) for x in tips_raw)
+    ):
+        raise ValueError("tip_cycle must be a tuple/list of two booleans")
+
+    tip_on, tip_off = tips_raw
+
+    swell_time = cast(float, arg.get("swell_time", 0.0))
+    swell_cycle = cast(int, arg.get("swell_cycle", 1))
 
     # extra kwargs for specialised methods
-    extra = {k: v for k, v in arg.items()
-             if k not in {"source", "receiver", "amount",
-                          "method", "pipette_mount", "swell", "tip_cycle"}}
+    extra = {
+    k: v for k, v in arg.items()
+    if k not in {
+        "source", "receiver", "amount", "method",
+        "pipette_mount", "swell_time", "swell_cycle", "tip_cycle"
+                }
+            }
 
     # get low-level transfer function
     transfer_fn = LIQUID_METHODS.get(method)
@@ -287,25 +228,28 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
                          f"Available: {list(LIQUID_METHODS)}")
 
     # prep tip
-    if tip_cycle:
+    if tip_on:
         pipette.pick_up_tip()
 
     # receiver objects
     recv_data: CoreWell = core_amounts[receiver[0]][receiver[1]]
     recv_well: Well     = recv_data["position"]
+    help.well_validation(core_amounts, receiver, amount, "receiver")
 
     # STOCK → CORE 
     if len(source) == 1:
         sub_name = source[0]
 
-        _well_validation(core_amounts, receiver, amount, "receiver")
-        _stock_validation(stock_amounts, sub_name, amount, pipette.min_volume)
+        help.stock_validation(stock_amounts, sub_name, amount, pipette.min_volume)
 
         stock_entry = stock_amounts[sub_name][0]
         stock_well: Well = stock_entry["position"]
 
-        if swell:
-            _swell_tip(pipette, stock_amounts, core_amounts, [sub_name])
+        if swell_time > 0: # passive swell
+            help.swell_tip(pipette, stock_amounts, core_amounts, [sub_name], seconds=swell_time)
+
+        if swell_cycle > 1: # active swell
+            help.swell_tip(pipette, stock_amounts, core_amounts, [sub_name], cycles=swell_cycle)
 
         transfer_fn(pipette=pipette,
                     to=recv_well,
@@ -324,11 +268,13 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         src_data: CoreWell = core_amounts[source[0]][source[1]]
         src_well: Well     = src_data["position"]
 
-        _well_validation(core_amounts, source,   amount, "source")
-        _well_validation(core_amounts, receiver, amount, "receiver")
+        help.well_validation(core_amounts, source,   amount, "source")
 
-        if swell:
-            _swell_tip(pipette, stock_amounts, core_amounts, source)
+        if swell_time > 0: # passive swell
+            help.swell_tip(pipette, stock_amounts, core_amounts, source, seconds=swell_time)
+
+        if swell_cycle > 1: # active swell
+            help.swell_tip(pipette, stock_amounts, core_amounts, source, cycles=swell_cycle)
 
         transfer_fn(pipette=pipette,
                     to=recv_well,
@@ -346,7 +292,94 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     else:
         raise ValueError("`source` must be ['substance'] or ['plate', 'well'].")
 
-    if tip_cycle:
+    if tip_off:
         pipette.drop_tip()
 
+    state = ctx.get("agent_state")
+    if state is not None:
+        # receiver always defines the new "location"
+        state["plate"] = receiver[0]
+        state["well"] = receiver[1]
+        state["last_action"] = "transfer"
+        state["timestamp"] = time.time()
+
     return True
+
+@register_action("sampler_action")
+def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    pip = ctx["pipettes"][arg.get("sampler_mount", "left")]
+    state = ctx["agent_state"]
+
+    mode = arg.get("mode")
+    if mode not in {"scan", "wash", "lift"}:
+        raise ValueError(f"Unknown sampler mode: {mode}")
+
+    # ---------- Helper: safe lift ----------
+    def safe_lift():
+        plate = state.get("plate")
+        well = state.get("well")
+        mode_prev = state.get("last_action")
+
+        if plate is None or well is None:
+        # try to find the first available core position
+            core = ctx["core_amounts"]
+            if core:
+                first_plate = next(iter(core.keys()))
+                first_well = next(iter(core[first_plate].keys()))
+                pos = core[first_plate][first_well]["position"]
+                pip.move_to(pos.top(100))
+
+        if mode_prev == "wash":
+            wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
+            pip.move_to(wash.top(100))
+        else:
+            pos = ctx["core_amounts"][plate][well]["position"]
+            pip.move_to(pos.top(100))
+
+    # ---------- LIFT ----------
+    if mode == "lift":
+        safe_lift()
+
+        state["last_action"] = "lift"
+        state["timestamp"] = time.time()
+        return True
+
+    # ---------- WASH ----------
+    elif mode == "wash":
+        amount = float(arg["amount"])
+        wells = ctx["stock_amounts"]["wash_solv"]
+
+        if wells[0]["volume"] < amount:
+            raise RuntimeError("Wash solvent insufficient")
+
+        safe_lift()
+        pos = wells[0]["position"]
+        pip.move_to(pos.top(40))
+
+        wells[0]["volume"] -= amount
+
+        state["plate"] = None
+        state["well"]  = None
+        state["last_action"] = "wash"
+        state["last_args"] = arg
+        state["timestamp"] = time.time()
+
+        return True
+
+    # ---------- SCAN ----------
+    elif mode == "scan":
+        plate = cast(str, arg["plate"])
+        well  = cast(str, arg["well"])
+
+        safe_lift()
+
+        pos = ctx["core_amounts"][plate][well]["position"]
+        pip.move_to(pos.top(35))
+
+        state["plate"] = plate
+        state["well"]  = well
+        state["last_action"] = "scan"
+        state["last_args"] = arg
+        state["timestamp"] = time.time()
+
+        return True
