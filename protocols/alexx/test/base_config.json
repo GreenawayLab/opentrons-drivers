@@ -1,9 +1,5 @@
 {
 
-"gantry_speed_X": 300,
-"gantry_speed_Y": 300,
-"gantry_speed_Z": 300,
-
 "pipettes": {
     "left": {
       "model": "p1000_single_gen2"},

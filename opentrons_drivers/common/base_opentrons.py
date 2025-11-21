@@ -9,129 +9,221 @@ from pathlib import Path
 
 
 class Opentrons:
-    """BaseRobot class that stores state and hardware of the machine"""
+    """
+    Unified Opentrons driver responsible for:
+    - Loading labware (core plates, stock plates, tipracks)
+    - Applying deck offsets
+    - Building volume/substance bookkeeping tables
+    - Loading pipettes and attaching tipracks
+    """
 
-    def __init__(self, protocol: protocol_api.ProtocolContext, 
+    def __init__(self, protocol: protocol_api.ProtocolContext,
                  base_config: BaseConfig) -> None:
         """
-        Initialize the robot with base configuration of the hardware and layout.
+        Create all labware, offsets, pipettes, and internal volume dictionaries
+        as described in the supplied BaseConfig.
 
         Parameters
         ----------
         protocol : ProtocolContext
-            Opentrons API object for interacting with the robot.
-        
+            Active Opentrons protocol context.
         base_config : BaseConfig
-            Hardware and layout configuration for Opentrons (pipettes, labware, etc.).
+            Declarative configuration describing all labware, pipettes,
+            offsets and initial well contents.
         """
         self.protocol = protocol
         self.base_config = base_config
 
-        self.core_plates: Dict[str, Labware] = {}  # Plates where substances are mixed
-        self.support_plates: List[Labware] = []  # Tipracks, etc.
-        self.stock_amounts: Dict[str, List[StockWell]] = defaultdict(list)  # Stock well information
-        self.core_amounts: Dict[str, Dict[str, CoreWell]] = defaultdict(dict)  # Core well information
-        self.pipettes: Dict[str, InstrumentContext] = {}  # Pipette objects
+        # Labware containers
+        self.core_plates: Dict[str, Labware] = {}
+        self.stock_plates: Dict[str, Labware] = {}
+        self.support_plates: List[Labware] = []  # tipracks and any support labware
 
-        # Set gantry speeds
-        for ax in ["X", "Y", "Z"]:
-            self.protocol.max_speeds[ax] = base_config.get(f"gantry_speed_{ax}", 400)
+        # Internal bookkeeping
+        self.core_amounts: Dict[str, Dict[str, CoreWell]] = defaultdict(dict)
+        self.stock_amounts: Dict[str, List[StockWell]] = defaultdict(list)
 
-        # Load core plates (returns plates + fills core_amounts)
-        self._load_assigned_plates("core_plates", is_stock=False)
+        # Pipette references
+        self.pipettes: Dict[str, InstrumentContext] = {}
 
-        # Load stock plates (ONLY fills stock_amounts, no plate objects)
-        self._load_assigned_plates("stock_plates", is_stock=True)
+        # Load all labware from BaseConfig
+        self._init_assigned_plates("core_plates", is_stock=False)
+        self._init_assigned_plates("stock_plates", is_stock=True)
 
-        # Load pipettes
-        pipettes = self.base_config["pipettes"]
-        for mount, pipette in pipettes.items():
-            unit = protocol.load_instrument(pipette['model'], mount=mount)
-            unit.swelled = None # type: ignore[attr-defined]
-            self.pipettes[mount] = unit
+        # Build well volume tables
+        self._build_amounts_dicts("core_plates", is_stock=False)
+        self._build_amounts_dicts("stock_plates", is_stock=True)
 
-    def _load_assigned_plates(self, name: str, is_stock: bool) -> None:
+        # Load pipettes (all tipracks are already inside support_plates)
+        self._init_pipettes()
+
+    # ----------------------------------------------------------------------
+    # Public API
+    # ----------------------------------------------------------------------
+
+    def set_offsets(self, offsets: Dict[str, Dict[str, float]]) -> None:
         """
-        Load plates from configuration and update system state.
-
-        This method loads either:
-        - **core plates**, which are represented in both `core_plates` and `core_amounts`,
-        - or **stock plates**, which populate the `stock_amounts` dictionary.
-
-        All plates are defined in the base config under the given `name`, 
-        and are expected to reference either a labware type string (stock plates)
-        or a custom definition file (core plates).
-
-        Resulting Structures
-        ---------------------
-        * self.core_amounts:
-            Dict[plate_name, Dict[well_name, CoreWell]]
-            Each well contains:
-                • position: Well object
-                • volume: float
-                • substance: {"initial": Optional[str]}
-                • max_volume: float
-
-        * self.stock_amounts:
-            Dict[substance_name, List[StockWell]]
-            Each StockWell contains:
-                • position: Well object
-                • volume: float
+        Apply updated deck offsets to existing labware objects.
 
         Parameters
-        -----------
-        name : str
-            The key in `self.base_config` pointing to the plate assignment dictionary.
-
-        is_stock : bool
-            Whether to treat the plates as stock (True) or core (False).
-            This affects both how the plate is parsed and where it is stored.
+        ----------
+        offsets : Dict[str, Dict[str, float]]
+            Mapping: plate_name → {"x": float, "y": float, "z": float}
         """
-        # TODO: refactor this method to simplify the logic
-        assigned_data = cast(Dict[str, PlateInfo], self.base_config.get(name, {}))
+        for plate_name, off in offsets.items():
+            if plate_name in self.core_plates:
+                plate = self.core_plates[plate_name]
+            elif plate_name in self.stock_plates:
+                plate = self.stock_plates[plate_name]
+            else:
+                # Tipracks live inside support_plates, but we cannot address by name:
+                # the user must specify tiprack offsets in BaseConfig only.
+                continue
 
-        for plate_name, plate_info in assigned_data.items():
-            offset = plate_info.get("offset", {})
+            plate.set_offset(
+                x=off.get("x", 0.0),
+                y=off.get("y", 0.0),
+                z=off.get("z", 0.0),
+            )
+
+    # ----------------------------------------------------------------------
+    # Internal: Labware creation
+    # ----------------------------------------------------------------------
+
+    def _init_assigned_plates(self, name: str, is_stock: bool) -> None:
+        """
+        Load all labware defined under `base_config[name]` and apply offsets.
+
+        This includes:
+        - Custom core plates (from custom JSON)
+        - Custom stock plates (from custom JSON)
+        - Tipracks (either built-in or custom JSON)
+        """
+        assigned = cast(Dict[str, PlateInfo], self.base_config.get(name, {}))
+
+        for plate_name, plate_info in assigned.items():
+            labware_type = plate_info["type"]
+            deck_slot = plate_info["place"]
+            offset = plate_info.get("offset", {"x": 0, "y": 0, "z": 0})
+
+            # Tipracks typically use standard names but may use custom definitions
             if plate_name.startswith("tiprack_"):
-                plate = self.protocol.load_labware(plate_info["type"], location=plate_info["place"])
-                plate.set_offset(x=offset.get('x', 0), y=offset.get('y', 0), z=offset.get('z', 0))
+                if labware_type.endswith(".json"):
+                    with open(Path("plates", labware_type)) as f:
+                        lw_def = json.load(f)
+                    plate = self.protocol.load_labware_from_definition(
+                        lw_def, deck_slot
+                    )
+                else:
+                    plate = self.protocol.load_labware(
+                        labware_name=labware_type, location=deck_slot
+                    )
+
+                plate.set_offset(
+                    x=offset.get("x", 0.0),
+                    y=offset.get("y", 0.0),
+                    z=offset.get("z", 0.0),
+                )
                 self.support_plates.append(plate)
                 continue
 
-            # Load labware definition
-            with open(Path('plates', plate_info["type"])) as labware_file:
-                labware_def = json.load(labware_file)
+            # Core / stock plates always use custom JSON
+            with open(Path("plates", labware_type)) as f:
+                lw_def = json.load(f)
 
-            plate = self.protocol.load_labware_from_definition(labware_def=labware_def, location=plate_info["place"])
-            plate.set_offset(x=offset.get('x', 0), y=offset.get('y', 0), z=offset.get('z', 0))
+            plate = self.protocol.load_labware_from_definition(
+                lw_def, deck_slot
+            )
 
-            # Ensure all wells have substance and amount values
-            well_defaults: Dict[str, CoreWell] = {
-                                well: {
-                                    "substance": {"initial": None},
-                                    "volume": 0,
-                                    **({"position": plate[well], "max_volume": plate_info["max_volume"]} if not is_stock else {})
-                                }
-                                for well in labware_def["wells"]
-                            }
-            if plate_info.get("content"):
-                for well, well_data in plate_info["content"].items():
-                    well_defaults[well]["volume"] = well_data["volume"]
-                    well_defaults[well]["substance"] = {"initial": well_data["substance"]}
+            plate.set_offset(
+                x=offset.get("x", 0.0),
+                y=offset.get("y", 0.0),
+                z=offset.get("z", 0.0),
+            )
 
-                    if not is_stock:
-                        well_defaults[well]["max_volume"] = plate_info["max_volume"]
-                        well_defaults[well]["position"] = plate[well]
-
-            # Store well data
             if is_stock:
-                for well, data in well_defaults.items():
-                    key = cast(str, data["substance"]["initial"])
-                    self.stock_amounts[key].append(
-                        {"position": plate[well], "volume": data["volume"]}
-                    )
+                self.stock_plates[plate_name] = plate
             else:
-                self.core_amounts[plate_name] = well_defaults  
-                self.core_plates[plate_name] = plate  
+                self.core_plates[plate_name] = plate
 
-    
+    # ----------------------------------------------------------------------
+    # Internal: Pipettes
+    # ----------------------------------------------------------------------
+
+    def _init_pipettes(self) -> None:
+        """
+        Load pipettes as defined in BaseConfig and attach loaded tipracks.
+        """
+        pip_cfg = self.base_config.get("pipettes", {})
+        for mount, info in pip_cfg.items():
+            model = info["model"]
+            unit = self.protocol.load_instrument(
+                model,
+                mount=mount,
+                tip_racks=self.support_plates if self.support_plates else None,
+            )
+            unit.swelled = None  # required for compatibility with actions
+            self.pipettes[mount] = unit
+
+    # ----------------------------------------------------------------------
+    # Internal: Bookkeeping dictionaries
+    # ----------------------------------------------------------------------
+
+    def _build_amounts_dicts(self, name: str, is_stock: bool) -> None:
+        """
+        Create `core_amounts` or `stock_amounts` dictionaries based on content
+        definitions in BaseConfig.
+
+        Core plates create one CoreWell per well.
+        Stock plates group wells by initial substance name.
+        """
+        assigned = cast(Dict[str, PlateInfo], self.base_config.get(name, {}))
+
+        for plate_name, plate_info in assigned.items():
+            # Skip tipracks
+            if plate_name.startswith("tiprack_"):
+                continue
+
+            with open(Path("plates", plate_info["type"])) as f:
+                wells_def = json.load(f)["wells"]
+            well_names = list(wells_def.keys())
+
+            content = plate_info.get("content", {})
+
+            # ------------------ Stock plates ------------------
+            if is_stock:
+                plate = self.stock_plates[plate_name]
+                for well in well_names:
+                    init = content.get(well, None)
+                    if init is None:
+                        continue
+
+                    sub = init["substance"]
+                    vol = init["volume"]
+
+                    entry: StockWell = {
+                        "position": plate[well],
+                        "volume": float(vol),
+                    }
+                    self.stock_amounts[sub].append(entry)
+                continue
+
+            # ------------------ Core plates ------------------
+            plate = self.core_plates[plate_name]
+            max_volume = plate_info["max_volume"]
+
+            well_structs: Dict[str, CoreWell] = {}
+
+            for well in well_names:
+                init = content.get(well, None)
+                sub = init["substance"] if init else None
+                vol = init["volume"] if init else 0.0
+
+                well_structs[well] = {
+                    "position": plate[well],
+                    "volume": float(vol),
+                    "substance": {"initial": sub},
+                    "max_volume": max_volume,
+                }
+
+            self.core_amounts[plate_name] = well_structs
