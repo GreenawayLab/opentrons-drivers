@@ -3,9 +3,10 @@ name = "opentrons_drivers"
 dynamic = ["version"]
 description = "Agents and protocols for running on opentrons hardware"
 authors = [
-    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"}
+    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk",
+    name = "Alex Ostudin", email = "ao1423@ic.ac.uk"}
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
