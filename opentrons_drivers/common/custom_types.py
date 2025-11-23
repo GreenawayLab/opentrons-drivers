@@ -30,10 +30,17 @@ JSONType = Union[JSONScalar, List["JSONType"], Dict[str, "JSONType"]]
 
 #Information about the device objects that is updated after every action
 
+class SystemState(TypedDict, total=False):
+    plate: str | None
+    well: str | None
+    last_action: str | None             # registry key
+    timestamp: float                    # when the last action happened
+
 class StaticCtx(TypedDict):
     core_amounts: Dict[str, Dict[str, CoreWell]]
     stock_amounts: Dict[str, List[StockWell]]
     pipettes: Dict[str, InstrumentContext]
+    state: SystemState
 
 #------------ Action Function Type Definition ------------
 
@@ -71,8 +78,4 @@ class AgentConfig(TypedDict):
     trigger: str  # e.g. "totally_not_a_file.json"
     action: str   # e.g. "transfer_liquid"
 
-class AgentState(TypedDict, total=False):
-    plate: str | None
-    well: str | None
-    last_action: str | None             # registry key
-    timestamp: float                    # when the last action happened
+

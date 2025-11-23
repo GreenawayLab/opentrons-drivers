@@ -3,7 +3,18 @@ from opentrons.types import Point, Location
 from opentrons.protocol_api.labware import Well
 from typing import Dict, List
 from opentrons_drivers.common.custom_types import StockWell, CoreWell
+from typing import Dict, Callable, TypeVar
 import time
+
+F = TypeVar("F", bound=Callable[..., object])
+
+def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[[F], F]]: # type: ignore[misc]
+    def register(name: str) -> Callable[[F], F]: # type: ignore[misc]
+        def decorator(fn: F) -> F: # type: ignore[misc]
+            registry[name] = fn
+            return fn
+        return decorator
+    return register
 
 #---------- Liquid transfer low-level functions ----------
 

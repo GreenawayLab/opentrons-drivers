@@ -4,6 +4,8 @@ import json
 from opentrons.protocol_api.instrument_context import InstrumentContext
 from opentrons.protocol_api.labware import Labware
 from typing import Dict, List, cast
+from opentrons_drivers.common.custom_types import StaticCtx, JSONType
+from opentrons_drivers.common.actions import ACTION_REGISTRY
 from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo
 from pathlib import Path
 
@@ -85,6 +87,37 @@ class Opentrons:
                 y=off.get("y", 0.0),
                 z=off.get("z", 0.0),
             )
+
+    def invoke(self, func_name: str, ctx: StaticCtx, arg: Dict[str, JSONType]) -> bool:
+        """
+        Invoke a registered action function.
+
+        Parameters
+        ----------
+        func_name : str
+            The name of the registered function in `ACTION_REGISTRY`.
+
+        ctx : StaticCtx
+            System state including pipettes, volumes, etc.
+
+        arg : dict[str, JSONType]
+            Arguments to pass into the registered function.
+
+        Returns
+        -------
+        bool
+            True if the action completed successfully.
+
+        Raises
+        ------
+        ValueError
+            If the function name is not in the registry.
+        """
+        try:
+            func = ACTION_REGISTRY[func_name]
+        except KeyError:
+            raise ValueError(f"Unknown action function '{func_name}'. Available: {list(ACTION_REGISTRY.keys())}")
+        return func(ctx, arg)
 
     # ----------------------------------------------------------------------
     # Internal: Labware creation
