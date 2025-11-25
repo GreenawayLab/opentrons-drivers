@@ -69,9 +69,6 @@ class BaseConfig(TypedDict):
     pipettes: Dict[str, PipetteInfo]              # e.g. {"left": {...}, "right": {...}}
     core_plates: Dict[str, PlateInfo]             # user-assigned plates
     stock_plates: Dict[str, PlateInfo]            # virtual source-only plates
-    gantry_speed_X: Optional[float]
-    gantry_speed_Y: Optional[float]               # for high-precision moves
-    gantry_speed_Z: Optional[float]
 
 # ---------- Full agent config for Agent class ----------
 class AgentConfig(TypedDict):
