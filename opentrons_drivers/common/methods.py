@@ -18,7 +18,8 @@ register_liquid_method = help.make_registry_decorator(LIQUID_METHODS)
 @register_liquid_method("basic_liquid_transfer")
 def basic_liquid_transfer(pipette: InstrumentContext, 
                      to: Well, fr: Well, 
-                     amount: float) -> None:
+                     amount: float, 
+                     airgap: float = 20) -> None:
     """
     Basic liquid transfer method.
 
@@ -34,7 +35,7 @@ def basic_liquid_transfer(pipette: InstrumentContext,
     amts = help.liquid_batching(pipette, amount)
     for a in amts:
         pipette.aspirate(a, fr)
-        pipette.air_gap(20)
+        pipette.air_gap(airgap)
         pipette.dispense(location=to.top(z=1))
         pipette.blow_out(location=to.top(z=1))
 
