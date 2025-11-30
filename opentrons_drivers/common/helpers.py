@@ -9,6 +9,25 @@ import time
 F = TypeVar("F", bound=Callable[..., object])
 
 def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[[F], F]]: # type: ignore[misc]
+    """
+    Return a decorator factory that registers functions into a given mapping.
+
+    The returned decorator takes a string key and, when applied to a function,
+    stores that function in the provided registry under the specified name.
+    This is used to form registries of liquid_methods and actions to be triggered.
+
+    Parameters
+    ----------
+    registry : Dict[str, F]
+        A dictionary that will collect functions keyed by the names supplied
+        to the generated decorator.
+
+    Returns
+    -------
+    Callable[[str], Callable[[F], F]]
+        A decorator factory. Calling it with a name returns a decorator that
+        registers a function under that name.
+    """
     def register(name: str) -> Callable[[F], F]: # type: ignore[misc]
         def decorator(fn: F) -> F: # type: ignore[misc]
             registry[name] = fn
