@@ -3,11 +3,11 @@
 Build a wheel for the current opentrons_drivers library and store it
 in a designated output directory (`dist/wheels` by default).
 
-This script will:
-1. Validate that pyproject.toml exists
-2. Install the minimal build backend
-3. Build the wheel
-4. Move the wheel into the target directory
+This script:
+1. Validates that pyproject.toml exists
+2. Installs the minimal build backend
+3. Builds the wheel
+4. Moves the wheel into the target directory
 """
 
 import subprocess

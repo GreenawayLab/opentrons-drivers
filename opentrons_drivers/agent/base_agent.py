@@ -3,7 +3,6 @@ from opentrons import protocol_api
 from typing import Dict
 from opentrons_drivers.common.custom_types import StaticCtx, JSONType, BaseConfig, AgentConfig
 from opentrons_drivers.common.base_opentrons import Opentrons
-from opentrons_drivers.common.actions import ACTION_REGISTRY
 from pathlib import Path
 import json
 import time
@@ -32,41 +31,12 @@ class Agent():
         self.agent_config = agent_config
         self.robot = Opentrons(protocol, base_config)
         self.static_ctx: StaticCtx = {
-                                'core_amounts':self.robot.core_amounts,
-                                'stock_amounts':self.robot.stock_amounts,
-                                'pipettes':self.robot.pipettes,
-                                        }
+                                'core_amounts': self.robot.core_amounts,
+                                'stock_amounts': self.robot.stock_amounts,
+                                'pipettes': self.robot.pipettes,
+                                'system_state': {}
+                                     }
 
-    def _invoke(self, func_name: str, ctx: StaticCtx, arg: Dict[str, JSONType]) -> bool:
-        """
-        Invoke a registered action function.
-
-        Parameters
-        ----------
-        func_name : str
-            The name of the registered function in `ACTION_REGISTRY`.
-
-        ctx : StaticCtx
-            System state including pipettes, volumes, etc.
-
-        arg : dict[str, JSONType]
-            Arguments to pass into the registered function.
-
-        Returns
-        -------
-        bool
-            True if the action completed successfully.
-
-        Raises
-        ------
-        ValueError
-            If the function name is not in the registry.
-        """
-        try:
-            func = ACTION_REGISTRY[func_name]
-        except KeyError:
-            raise ValueError(f"Unknown action function '{func_name}'. Available: {list(ACTION_REGISTRY.keys())}")
-        return func(ctx, arg)
 
     def _parse_payload(self, path: Path) -> Dict[str, JSONType]:
         """
@@ -137,9 +107,9 @@ class Agent():
                     try:
                         payload = self._parse_payload(fp)
                         fp.unlink()
-                        result = self._invoke(action, self.static_ctx, payload)
+                        result = self.robot.invoke(action, self.static_ctx, payload)
                         if result:
                             self._write_status("complete") 
                     except Exception as e:
                         self._write_status("operating", error=e) 
-            time.sleep(1)
+            time.sleep(1.5)
