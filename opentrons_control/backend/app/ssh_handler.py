@@ -58,7 +58,7 @@ class SSHClient:
     def _base_scp_cmd(self) -> list[str]:
         return [
             "scp",
-            "-O",  # force legacy scp protocol (bcs f*** you that's why)
+            "-O",  # force legacy scp protocol (bcs Opentrons lol)
             "-i", str(self.key_path),
             "-P", str(self.port),
             "-o", "BatchMode=yes",
@@ -160,6 +160,7 @@ class OTRuntime:
     ):
         self.ssh = SSHClient(host=host, user=user, key_path=key_path)  
         self.workdir = '/'
+        self.base: str | None = None
 
     # ------------------------------------------------------------------
 
@@ -174,6 +175,7 @@ class OTRuntime:
             logs/
         """
         base = f"{self.workdir}/{protocol_name}"
+        self.base = base
         cmd = (
             f"mkdir -p "
             f"{base}/postbox "
@@ -193,7 +195,7 @@ class OTRuntime:
         - opentrons_execute is in PATH
         """
         cmd = (
-            f"cd {self.workdir} && "
+            f"cd {self.base} && "
             "nohup opentrons_execute "
             "-m opentrons_drivers.agent.agent_main "
             "> agent.log 2>&1 < /dev/null &"
@@ -202,11 +204,11 @@ class OTRuntime:
 
     # ------------------------------------------------------------------
 
-    def upload_postbox_file(self, protocol_name: str, local: Path) -> None:
+    def upload_postbox_file(self, local: Path) -> None:
         """
         Major engine of communication with the agent.
         """
-        remote = f"{self.workdir}/{protocol_name}/postbox/{local.name}"
+        remote = f"{self.base}/postbox/{local.name}"
         self.ssh.upload(local, remote)
 
 
@@ -217,13 +219,13 @@ class OTRuntime:
         Download status.json from the postbox to see how the action goes.
         """
         self.ssh.download(
-            f"{self.workdir}/postbox/status.json",
+            f"{self.base}/postbox/status.json",
             local_tmp,
         )
 
-    def send_stop(self, protocol_name: str) -> None:
+    def send_stop(self) -> None:
         """
         Send a stop instruction to the agent -> shutdown.
         """
-        remote = f"/{protocol_name}/postbox/stop.json"
+        remote = f"{self.base}/postbox/stop.json"
         self.ssh.run(f"touch {remote}")
