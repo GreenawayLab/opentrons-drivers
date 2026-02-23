@@ -57,7 +57,7 @@ ruff==0.15.2
     # via opentrons_drivers (pyproject.toml)
 typing-extensions==4.15.0
     # via mypy
-virtualenv==20.36.1
+virtualenv==20.38.0
     # via pre-commit
 wheel==0.45.1
     # via pip-tools
