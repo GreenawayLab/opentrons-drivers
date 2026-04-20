@@ -4,7 +4,7 @@
 #
 #    pip-compile --extra=dev --output-file=dev-requirements.txt pyproject.toml
 #
-build==1.4.2
+build==1.4.3
     # via pip-tools
 cfgv==3.5.0
     # via pre-commit
