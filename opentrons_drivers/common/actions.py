@@ -4,6 +4,7 @@ from opentrons_drivers.common.custom_types import ActionFn
 from opentrons_drivers.common.methods import LIQUID_METHODS
 from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
 from opentrons.protocol_api.labware import Well
+from opentrons.types import Point, Location
 from opentrons.protocol_api.instrument_context import InstrumentContext
 import opentrons_drivers.common.helpers as help
 
@@ -253,3 +254,43 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         state["timestamp"] = time.time()
 
         return True
+
+@register_action("test_action")
+def test_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """
+    Smoke test: move pipette to deck-safe coordinates and back, then home.
+    
+    Proves: HTTP → slot → protocol thread → Opentrons API → motors path
+    is alive end-to-end. Does NOT touch tips, wells, or any labware.
+
+    Payload (all optional, keyword-only):
+        pipette_mount : "left" | "right"  (default "left")
+        x, y, z       : float             (default 200, 150, 150 — deck-safe)
+        dx            : float             (default 20.0 — visible nudge)
+        skip_home     : bool              (default False — set True to leave
+                                           the pipette at the final move
+                                           position, e.g. for chained tests)
+    """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+
+    pipettes = ctx["pipettes"]
+    if pipette_mount not in pipettes:
+        raise RuntimeError(
+            f"No pipette mounted on '{pipette_mount}'. "
+            f"Available mounts: {sorted(pipettes.keys())}"
+        )
+    pipette: InstrumentContext = pipettes[pipette_mount]
+
+    x  = float(cast(float, arg.get("x", 200.0)))
+    y  = float(cast(float, arg.get("y", 150.0)))
+    z  = float(cast(float, arg.get("z", 150.0)))
+    dx = float(cast(float, arg.get("dx", 20.0)))
+    skip_home = bool(arg.get("skip_home", False))
+
+    pipette.move_to(Location(Point(x=x,      y=y, z=z), None))
+    pipette.move_to(Location(Point(x=x + dx, y=y, z=z), None))
+
+    if not skip_home:
+        pipette.home()
+
+    return True
