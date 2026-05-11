@@ -59,7 +59,7 @@ typing-extensions==4.15.0
     # via mypy
 virtualenv==21.3.0
     # via pre-commit
-wheel==0.46.3
+wheel==0.47.0
     # via pip-tools
 
 # The following packages are considered to be unsafe in a requirements file:
