@@ -1,13 +1,19 @@
 FROM python:3.12-slim
 
-# Where code lives inside the container
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir fastapi uvicorn python-multipart
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy backend code
+RUN pip install --no-cache-dir \
+        fastapi \
+        uvicorn \
+        httpx \
+        pydantic
+
 COPY app /app/app
 
-# Start the server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "app"]
