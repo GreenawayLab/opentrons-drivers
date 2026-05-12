@@ -281,10 +281,10 @@ def test_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         )
     pipette: InstrumentContext = pipettes[pipette_mount]
 
-    x  = float(cast(float, arg.get("x", 200.0)))
-    y  = float(cast(float, arg.get("y", 150.0)))
-    z  = float(cast(float, arg.get("z", 150.0)))
-    dx = float(cast(float, arg.get("dx", 20.0)))
+    x = float(arg.get("x", 200.0))
+    y = float(arg.get("y", 150.0))
+    z = float(arg.get("z", 150.0))
+    dx = float(arg.get("dx", 20.0))
     skip_home = bool(arg.get("skip_home", False))
 
     pipette.move_to(Location(Point(x=x,      y=y, z=z), None))
