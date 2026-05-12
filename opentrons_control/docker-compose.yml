@@ -1,14 +1,55 @@
 version: "3.9"
 
+# Three services across two networks:
+#
+# - proxy: the only externally-reachable service. Forwards session
+#   lifecycle calls to the backend and action calls to agents on the
+#   robot subnet.
+# - backend: control plane. Reachable only by the proxy via the
+#   "internal" network. Has SSH access to robots via the "robot_net"
+#   network for bootstrap-time operations.
+# - frontend: static UI. Reachable externally.
+#
+# The "robot_net" network is the bridge to the isolated robot subnet.
+# In production this is replaced with a host-level bridge or a VLAN
+# interface; for local development a plain bridge is sufficient.
+
 services:
-  backend:
-    build: ./backend
+  proxy:
+    build: ./proxy
     ports:
-      - "8000:8000"
+      - "443:8080"
+    networks:
+      - internal
+      - robot_net
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      PROXY_TIMEOUT: "200"
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    networks:
+      - internal
+      - robot_net
+    volumes:
+      - ./data:/data:ro
+    environment:
+      BACKEND_CONFIG: "/data/backend.json"
 
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
     depends_on:
-      - backend
+      - proxy
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  robot_net:
+    driver: bridge
