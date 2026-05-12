@@ -25,9 +25,6 @@ metadata = {
     "apiLevel": "2.13",
 }
 
-with open(Path("postbox", "base_config.json")) as bc_file:
-    base_config = json.load(bc_file)
-
 
 def _write_crash(exc: BaseException) -> None:
     """Best-effort write of a crash record to status.json."""
@@ -46,6 +43,13 @@ def _write_crash(exc: BaseException) -> None:
 def run(protocol: protocol_api.ProtocolContext) -> None:
     """Function triggered by the systemd unit opentrons_execute."""
     try:
+        # Config load is inside run() so that a missing or malformed
+        # base_config.json (FileNotFoundError, JSONDecodeError) gets
+        # caught by the crash handler below instead of dying silently
+        # at import time before any status can be written.
+        with open(Path("postbox", "base_config.json")) as bc_file:
+            base_config = json.load(bc_file)
+
         ot = Agent(protocol=protocol, base_config=base_config)
         # serve() never returns under normal operation; it runs the
         # job-execution loop on this thread for the lifetime of the agent.

@@ -60,7 +60,7 @@ cleanup) without restructuring.
 
 from __future__ import annotations
 from opentrons import protocol_api
-from typing import Dict, Optional, Any
+from typing import Optional, Any
 from opentrons_drivers.common.custom_types import StaticCtx, BaseConfig
 from opentrons_drivers.common.base_opentrons import Opentrons
 from opentrons_drivers.agent.http_handler import Handler
@@ -142,7 +142,7 @@ class Agent:
         # calls or network I/O — that would block status polls for as long
         # as a job runs.
         self._lock = Lock()
-        self._slot: Dict[str, Any] = {
+        self._slot: dict[str, Any] = {
             "job_id": None,
             "action": None,
             "payload": None,
@@ -269,7 +269,7 @@ class Agent:
                 continue
             self._execute(job)
 
-    def _claim_queued(self) -> Optional[Dict[str, Any]]:
+    def _claim_queued(self) -> Optional[dict[str, Any]]:
         """
         Atomically flip the slot's status from "queued" → "running" and
         return the work to do.
@@ -289,7 +289,7 @@ class Agent:
                 "payload": self._slot["payload"],
             }
 
-    def _execute(self, job: Dict[str, Any]) -> None:
+    def _execute(self, job: dict[str, Any]) -> None:
         """
         Run a single job to completion on the protocol thread.
 
@@ -339,23 +339,19 @@ class Agent:
             "finished_at": s["finished_at"],
         }
 
-    def _write_status(self, status: str, error: Optional[BaseException] = None) -> None:
+    def _write_status(self, status: str) -> None:
         """
         Write a coarse-grained status to disk.
 
-        Used only for boot-time diagnostics and crash detection (writes
-        "starting", "ready", and indirectly "crashed" via agent_main.py).
-        The hot path of running jobs is reflected via GET /actions/<id>,
-        not here.
+        Used only for boot-time diagnostics ("starting", "ready"). Crash
+        records are written by agent_main.py's _write_crash, which has
+        access to an active exception via traceback.format_exc(). The hot
+        path of running jobs is reflected via GET /actions/<id>, not here.
         """
-        content = {
-            "status": status,
-            "error": None if error is None else traceback.format_exc(),
-        }
         try:
             Path("postbox").mkdir(parents=True, exist_ok=True)
             with open("postbox/status.json", "w") as f:
-                json.dump(content, f, indent=2)
+                json.dump({"status": status, "error": None}, f, indent=2)
         except OSError:
             # Don't take down the agent because we couldn't write a log.
             pass

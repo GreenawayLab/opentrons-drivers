@@ -54,9 +54,19 @@ class Handler(BaseHTTPRequestHandler):
             # because the slot was already updated before this point.
             pass
 
+    # Cap request bodies at 1 MiB. Action payloads are dicts of scalars
+    # and small arrays; nothing legitimate gets near this. A misbehaving
+    # client claiming Content-Length: 99999999999 would otherwise tie up
+    # a handler thread waiting on bytes that never arrive.
+    _MAX_BODY_BYTES = 1024 * 1024
+
     def _read_json_body(self) -> Optional[dict]:
-        n = int(self.headers.get("Content-Length", "0"))
-        if n <= 0:
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            n = int(raw_len)
+        except ValueError:
+            return None
+        if n <= 0 or n > self._MAX_BODY_BYTES:
             return None
         try:
             raw = self.rfile.read(n)
