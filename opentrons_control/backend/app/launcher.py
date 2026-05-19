@@ -8,10 +8,11 @@ bootstrap helpers, and the agent's HTTP client.
 The launch flow:
 
 1. Acquire the robot lock and register the session in ``starting`` status.
-2. Materialise the postbox payload into a temporary directory on the
-   backend filesystem.
-3. SSH-prepare the launch directory on the OT, SCP all materialised files
-   into its postbox, and start the agent process.
+2. Materialise each named bucket of files into a temporary directory on
+   the backend filesystem.
+3. SSH-prepare the launch directory on the OT, SCP each bucket into its
+   matching subdirectory (``postbox/``, ``plates/``, etc.), and start the
+   agent process.
 4. Poll the agent's ``/health`` until it reports ready.
 5. Transition the session to ``active`` and return it.
 
@@ -27,9 +28,8 @@ import json
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Mapping, Optional
+from typing import AsyncIterator, Mapping, Optional, Any
 
-from opentrons_drivers.common.custom_types import JSONType
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
 from opentrons_control.backend.app.ot_client import OTClient, OTClientError
 from opentrons_control.backend.app.sessions import (
@@ -54,44 +54,55 @@ class BootstrapFailed(RuntimeError):
     """
 
 
-class PostboxFormatError(ValueError):
-    """Raised when a postbox entry cannot be serialised as written."""
+class FileFormatError(ValueError):
+    """Raised when a file entry cannot be serialised as written."""
 
 
-# -------------------- Postbox materialisation --------------------
+# -------------------- File materialisation --------------------
 
 
 @asynccontextmanager
-async def _materialise_postbox(
-    payload: Mapping[str, JSONType],
-) -> AsyncIterator[list[Path]]:
+async def _materialise_buckets(
+    buckets: Mapping[str, Mapping[str, Any]],
+) -> AsyncIterator[dict[str, list[Path]]]:
     """
-    Stage a postbox payload as files inside a temporary directory.
+    Stage one or more named buckets of files inside a temporary directory.
 
-    Each entry's key is used verbatim as the filename. The serialisation
-    format is inferred from the extension; only ``.json`` is supported.
-    Values are serialised with :func:`json.dump`.
+    ``buckets`` is a mapping of subdirectory name (e.g. ``"postbox"``,
+    ``"plates"``) to a mapping of filename to JSON-serialisable content.
+    Each bucket becomes its own subdirectory under the temp root.
 
-    The temporary directory is removed on context exit regardless of
-    success.
+    Yields a mapping of subdirectory name to the list of staged file
+    paths within it. The temporary directory is removed on context exit
+    regardless of success.
+
+    Only ``.json`` filenames are accepted in this revision. Any other
+    suffix raises :class:`FileFormatError` before any state transition.
     """
-    with tempfile.TemporaryDirectory(prefix="postbox_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="launch_") as tmp:
         tmp_path = Path(tmp)
-        files: list[Path] = []
+        staged: dict[str, list[Path]] = {}
 
-        for name, content in payload.items():
-            suffix = Path(name).suffix.lower()
-            if suffix != ".json":
-                raise PostboxFormatError(
-                    f"postbox entry {name!r}: only .json is supported"
-                )
+        for subdir, files in buckets.items():
+            bucket_dir = tmp_path / subdir
+            bucket_dir.mkdir()
+            bucket_paths: list[Path] = []
 
-            target = tmp_path / name
-            with target.open("w", encoding="utf-8") as f:
-                json.dump(content, f, indent=2)
-            files.append(target)
+            for name, content in files.items():
+                suffix = Path(name).suffix.lower()
+                if suffix != ".json":
+                    raise FileFormatError(
+                        f"{subdir}/{name}: only .json is supported"
+                    )
 
-        yield files
+                target = bucket_dir / name
+                with target.open("w", encoding="utf-8") as f:
+                    json.dump(content, f, indent=2)
+                bucket_paths.append(target)
+
+            staged[subdir] = bucket_paths
+
+        yield staged
 
 
 # -------------------- Launch flow --------------------
@@ -103,7 +114,7 @@ async def launch_session(
     robot_id: str,
     protocol_name: str,
     mode: Mode,
-    postbox: Mapping[str, JSONType],
+    files: Mapping[str, Mapping[str, Any]],
     client_id: Optional[str] = None,
     readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
 ) -> Session:
@@ -120,10 +131,12 @@ async def launch_session(
         Human-friendly protocol name; used in directory paths on the OT.
     mode :
         ``manual`` for backend-driven runs, ``auto`` for external clients.
-    postbox :
-        Files to land in the agent's postbox directory before the agent
-        starts. Keys are filenames; values are JSON-serialisable content.
-        The launcher does not interpret the contents.
+    files :
+        Mapping of subdirectory name to a mapping of filename to
+        JSON-serialisable content. Each subdirectory is materialised on
+        the OT under the launch directory. Typical keys are ``postbox``
+        (containing ``base_config.json``) and ``plates`` (containing
+        labware definitions referenced by base_config).
     client_id :
         External client identifier, if any. ``None`` for manual runs.
     readiness_timeout :
@@ -138,8 +151,8 @@ async def launch_session(
     ------
     UnknownRobot, RobotBusy
         Propagated from :meth:`SessionRegistry.acquire`.
-    PostboxFormatError
-        A postbox entry cannot be serialised. Raised before any state
+    FileFormatError
+        A file entry cannot be serialised. Raised before any state
         transition or network I/O.
     BootstrapFailed
         Any failure after the session was acquired. The session is left
@@ -164,11 +177,12 @@ async def launch_session(
     loop = asyncio.get_running_loop()
 
     try:
-        async with _materialise_postbox(postbox) as files:
+        async with _materialise_buckets(files) as staged:
             await loop.run_in_executor(None, bootstrap.prepare_dir)
-            await loop.run_in_executor(
-                None, bootstrap.upload_postbox_files, files
-            )
+            for subdir, paths in staged.items():
+                await loop.run_in_executor(
+                    None, bootstrap.upload_files_to, subdir, paths
+                )
             await loop.run_in_executor(None, bootstrap.start_agent)
 
         async with OTClient(robot.agent_base_url) as client:

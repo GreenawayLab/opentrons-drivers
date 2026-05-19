@@ -32,10 +32,9 @@ from typing import Any, AsyncIterator, Dict, Mapping, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from opentrons_drivers.common.custom_types import JSONType
 from opentrons_control.backend.app.launcher import (
     BootstrapFailed,
-    PostboxFormatError,
+    FileFormatError,
     launch_session,
 )
 from opentrons_control.backend.app.ot_client import OTClient
@@ -62,7 +61,7 @@ class CreateSessionRequest(BaseModel):
     robot_id: str
     protocol_name: str
     mode: Mode = "auto"
-    postbox: Dict[str, Any] = Field(default_factory=dict)
+    files: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     client_id: Optional[str] = None
 
 
@@ -147,7 +146,6 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
         app.state.registry = registry
         logger.info("backend api started with %d robot(s)", len(robots))
         yield
-        # Best-effort teardown: abort any sessions still live at shutdown.
         for session in list(registry.all_sessions()):
             try:
                 await _abort_session(registry, session.token)
@@ -191,14 +189,14 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
-                postbox=req.postbox,  # type: ignore[arg-type]
+                files=req.files,  # type: ignore[arg-type]
                 client_id=req.client_id,
             )
         except UnknownRobot:
             raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
         except RobotBusy as e:
             raise HTTPException(status_code=409, detail=str(e))
-        except PostboxFormatError as e:
+        except FileFormatError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except BootstrapFailed as e:
             raise HTTPException(status_code=502, detail=str(e))

@@ -38,7 +38,7 @@ class Artifact:
     """
 
     def __init__(self, base_url: str, cache_dir: str | None = None) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/").rstrip("\\")
         self.cache_dir = Path(cache_dir or "~/.opentrons_control/cache").expanduser()
         (self.cache_dir / "keys").mkdir(parents=True, exist_ok=True)
 
@@ -56,8 +56,7 @@ class Artifact:
         cached_key = self.cache_dir / "keys" / key_name
 
         if not cached_key.exists():
-            source = f"{self.base_url}/keys/{key_name}"
-            self._fetch(source, cached_key)
+            self._fetch_key(key_name, cached_key)
 
         cached_key.chmod(stat.S_IRUSR | stat.S_IWUSR)
         return cached_key
@@ -75,12 +74,14 @@ class Artifact:
     def _is_http(self) -> bool:
         return self.base_url.startswith("http://") or self.base_url.startswith("https://")
 
-    def _fetch(self, source: str, dest: Path) -> None:
-        """Fetch a single key, dispatching by transport."""
+    def _fetch_key(self, key_name: str, dest: Path) -> None:
+        """Fetch a key from the store into ``dest``, dispatching by transport."""
         if self._is_http():
-            self._download_http(source, dest)
+            url = f"{self.base_url}/keys/{key_name}"
+            self._download_http(url, dest)
         else:
-            self._copy_file(Path(source), dest)
+            source = Path(self.base_url) / "keys" / key_name
+            self._copy_file(source, dest)
 
     @staticmethod
     def _download_http(url: str, dest: Path) -> None:

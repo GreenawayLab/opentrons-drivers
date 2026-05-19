@@ -18,7 +18,7 @@ services:
   proxy:
     build: ./proxy
     ports:
-      - "443:8080"
+      - "8080:8080"
     networks:
       - internal
       - robot_net
@@ -50,6 +50,5 @@ services:
 networks:
   internal:
     driver: bridge
-    internal: true
   robot_net:
     driver: bridge

@@ -42,6 +42,7 @@ from typing import Any, Dict
 
 import uvicorn
 
+from opentrons_control.backend.app.artifact import Artifact
 from opentrons_control.backend.app.api import create_app
 from opentrons_control.backend.app.sessions import Robot
 
@@ -56,18 +57,21 @@ def load_robots(config: Dict[str, Any]) -> Dict[str, Robot]:
     """
     Build the :class:`Robot` mapping from a parsed configuration dict.
 
-    Per-robot ``key_name`` entries are resolved against ``secrets.keys_dir``
-    to produce absolute key paths. The library never sees raw key names.
+    Per-robot ``key_name`` entries are resolved against the artifact store
+    declared in ``config["artifacts"]["base_url"]``. Each key is fetched
+    (or read from the local cache) and the resulting absolute path is
+    stored on the :class:`Robot` instance.
     """
-    keys_dir = Path(config["secrets"]["keys_dir"])
+    artifact = Artifact(base_url=config["artifacts"]["base_url"])
     robots: Dict[str, Robot] = {}
 
     for robot_id, entry in config["robots"].items():
+        key_path = artifact.resolve_key(entry["key_name"])
         robots[robot_id] = Robot(
             id=robot_id,
             host=entry["host"],
             user=entry["user"],
-            key_path=keys_dir / entry["key_name"],
+            key_path=key_path,
             agent_port=entry.get("agent_port", 9000),
         )
     return robots
