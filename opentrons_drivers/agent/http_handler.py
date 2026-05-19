@@ -2,6 +2,7 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Optional, TYPE_CHECKING
 import json
+import os
 
 if TYPE_CHECKING:
     # Type-only import to avoid a runtime circular dependency: Agent owns
@@ -47,6 +48,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(payload)
+            # Flush so the response bytes hit the wire before the caller
+            # might trigger process exit (notably /abort below).
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             # Client disconnected before we could reply. The action (if any)
             # is unaffected — it runs on the protocol thread and doesn't
@@ -73,6 +77,19 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+
+    def _drain_body(self) -> None:
+        """Consume and discard any pending request body."""
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            n = int(raw_len)
+        except ValueError:
+            return
+        if n > 0:
+            try:
+                self.rfile.read(min(n, self._MAX_BODY_BYTES))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Routes
@@ -108,39 +125,53 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": f"no such route: {self.path}"})
 
     def do_POST(self) -> None:
-        if self.path.rstrip("/") != "/actions":
-            self._send_json(404, {"error": f"no such route: {self.path}"})
+        path = self.path.rstrip("/")
+
+        # ---- Abort: respond, flush, exit the process ----
+        # The agent has no clean shutdown path because hardware work runs
+        # on the protocol thread which we cannot interrupt cooperatively.
+        # We send 202 first, flush so the client gets the response, then
+        # os._exit to kill the whole process (handler threads, server
+        # thread, protocol thread, hardware loop) atomically.
+        if path == "/abort":
+            self._drain_body()
+            self._send_json(202, {"status": "aborting"})
+            os._exit(0)
+
+        # ---- Submit action ----
+        if path == "/actions":
+            if not self.agent.is_ready():
+                self._send_json(503, {"error": "agent not ready"})
+                return
+
+            body = self._read_json_body()
+            if body is None or "action" not in body:
+                self._send_json(
+                    400,
+                    {"error": "request body must be JSON with 'action' (str) and 'payload' (dict)"},
+                )
+                return
+
+            action = body.get("action")
+            payload = body.get("payload", {})
+
+            if not isinstance(action, str) or not isinstance(payload, dict):
+                self._send_json(
+                    400,
+                    {"error": "'action' must be str and 'payload' must be dict"},
+                )
+                return
+
+            # All this branch does, ultimately, is write the request into
+            # the agent's slot under a lock. The actual hardware work
+            # happens later on the protocol thread. This handler never
+            # blocks on hardware — it returns 202 within milliseconds and
+            # the orchestrator polls /actions/<job_id> for completion.
+            accepted, info = self.agent.submit(action, payload)
+            if not accepted:
+                self._send_json(409, info)
+                return
+            self._send_json(202, info)
             return
 
-        if not self.agent.is_ready():
-            self._send_json(503, {"error": "agent not ready"})
-            return
-
-        body = self._read_json_body()
-        if body is None or "action" not in body:
-            self._send_json(
-                400,
-                {"error": "request body must be JSON with 'action' (str) and 'payload' (dict)"},
-            )
-            return
-
-        action = body.get("action")
-        payload = body.get("payload", {})
-
-        if not isinstance(action, str) or not isinstance(payload, dict):
-            self._send_json(
-                400,
-                {"error": "'action' must be str and 'payload' must be dict"},
-            )
-            return
-
-        # All this method does, ultimately, is write the request into the
-        # agent's slot under a lock. The actual hardware work happens later
-        # on the protocol thread. This handler never blocks on hardware —
-        # it returns 202 within milliseconds and the orchestrator polls
-        # /actions/<job_id> for completion.
-        accepted, info = self.agent.submit(action, payload)
-        if not accepted:
-            self._send_json(409, info)
-            return
-        self._send_json(202, info)
+        self._send_json(404, {"error": f"no such route: {self.path}"})
