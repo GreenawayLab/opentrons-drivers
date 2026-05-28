@@ -4,6 +4,7 @@ from opentrons_drivers.common.custom_types import ActionFn
 from opentrons_drivers.common.methods import LIQUID_METHODS
 from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
 from opentrons.protocol_api.labware import Well
+from opentrons.types import Point, Location
 from opentrons.protocol_api.instrument_context import InstrumentContext
 import opentrons_drivers.common.helpers as help
 
