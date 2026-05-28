@@ -18,7 +18,7 @@ import sys
 
 def main():
     repo_root = Path(__file__).resolve().parent
-    pyproject = repo_root / "pyproject.toml"
+    pyproject = Path("C:/Users/Aleksandr Ostudin/Documents/Laba/Lond/code/opentrons-drivers/pyproject.toml")  # repo_root / "pyproject.toml"
 
     if not pyproject.exists():
         print("ERROR: pyproject.toml not found. Cannot build wheel.", file=sys.stderr)

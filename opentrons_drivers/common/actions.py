@@ -197,14 +197,14 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
                 first_plate = next(iter(core.keys()))
                 first_well = next(iter(core[first_plate].keys()))
                 pos = core[first_plate][first_well]["position"]
-                pip.move_to(pos.top(100))
+                pip.move_to(pos.top(50))
 
         if mode_prev == "wash":
             wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
-            pip.move_to(wash.top(100))
+            pip.move_to(wash.top(50))
         else:
             pos = ctx["core_amounts"][plate][well]["position"]
-            pip.move_to(pos.top(100))
+            pip.move_to(pos.top(50))
 
     # ---------- LIFT ----------
     if mode == "lift":
@@ -224,7 +224,7 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
         safe_lift()
         pos = wells[0]["position"]
-        pip.move_to(pos.top(40))
+        pip.move_to(pos.top(30))
 
         wells[0]["volume"] -= amount
 
@@ -244,7 +244,7 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         safe_lift()
 
         pos = ctx["core_amounts"][plate][well]["position"]
-        pip.move_to(pos.top(35))
+        pip.move_to(pos.top(30))
 
         state["plate"] = plate
         state["well"]  = well
@@ -253,3 +253,43 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         state["timestamp"] = time.time()
 
         return True
+
+@register_action("test_action")
+def test_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """
+    Smoke test: move pipette to deck-safe coordinates and back, then home.
+    
+    Proves: HTTP → slot → protocol thread → Opentrons API → motors path
+    is alive end-to-end. Does NOT touch tips, wells, or any labware.
+
+    Payload (all optional, keyword-only):
+        pipette_mount : "left" | "right"  (default "left")
+        x, y, z       : float             (default 200, 150, 150 — deck-safe)
+        dx            : float             (default 20.0 — visible nudge)
+        skip_home     : bool              (default False — set True to leave
+                                           the pipette at the final move
+                                           position, e.g. for chained tests)
+    """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+
+    pipettes = ctx["pipettes"]
+    if pipette_mount not in pipettes:
+        raise RuntimeError(
+            f"No pipette mounted on '{pipette_mount}'. "
+            f"Available mounts: {sorted(pipettes.keys())}"
+        )
+    pipette: InstrumentContext = pipettes[pipette_mount]
+
+    x = float(arg.get("x", 200.0))
+    y = float(arg.get("y", 150.0))
+    z = float(arg.get("z", 50.0))
+    dx = float(arg.get("dx", 20.0))
+    skip_home = bool(arg.get("skip_home", False))
+
+    pipette.move_to(Location(Point(x=x,      y=y, z=z), None))
+    pipette.move_to(Location(Point(x=x + dx, y=y, z=z), None))
+
+    if not skip_home:
+        pipette.home()
+
+    return True
