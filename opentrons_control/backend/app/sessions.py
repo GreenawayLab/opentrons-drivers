@@ -21,24 +21,9 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
+import opentrons_control.backend.app.custom_types as ct
 from pathlib import Path
-from typing import Dict, Literal, Optional
-
-
-# -------------------- Types --------------------
-
-
-Mode = Literal["manual", "auto"]
-
-SessionStatus = Literal[
-    "starting",   # bootstrap in flight (SSH + agent boot)
-    "active",     # agent ready, accepting actions through the proxy
-    "aborting",   # abort received, teardown in flight
-    "ended",      # terminal: completed normally or fully torn down
-    "failed",     # terminal: bootstrap or runtime failure
-]
-
-TERMINAL_STATUSES: tuple[SessionStatus, ...] = ("ended", "failed")
+from typing import Dict, Optional
 
 
 # -------------------- Robot config --------------------
@@ -93,8 +78,8 @@ class Session:
     robot_id: str
     launch_id: str
     protocol_name: str
-    mode: Mode
-    status: SessionStatus = "starting"
+    mode: ct.Mode
+    status: ct.SessionStatus = "starting"
     agent_base_url: Optional[str] = None
     client_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -102,7 +87,7 @@ class Session:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in TERMINAL_STATUSES
+        return self.status in ct.TERMINAL_STATUSES
 
 
 # -------------------- Routing view --------------------
@@ -120,26 +105,7 @@ class RouteTarget:
 
     robot_id: str
     agent_base_url: str
-    status: SessionStatus
-
-
-# -------------------- Exceptions --------------------
-
-
-class UnknownRobot(KeyError):
-    """Raised when an operation references a robot_id not in the registry."""
-
-
-class RobotBusy(RuntimeError):
-    """Raised when a session cannot be created because the robot is in use."""
-
-    def __init__(self, robot_id: str):
-        super().__init__(f"robot {robot_id!r} is busy")
-        self.robot_id = robot_id
-
-
-class UnknownSession(KeyError):
-    """Raised when an operation references an unknown session token."""
+    status: ct.SessionStatus
 
 
 # -------------------- Registry --------------------
@@ -179,7 +145,7 @@ class SessionRegistry:
         try:
             return self._robots[robot_id]
         except KeyError:
-            raise UnknownRobot(robot_id) from None
+            raise ct.UnknownRobot(robot_id) from None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -190,7 +156,7 @@ class SessionRegistry:
         robot_id: str,
         *,
         protocol_name: str,
-        mode: Mode,
+        mode: ct.Mode,
         client_id: Optional[str] = None,
     ) -> Session:
         """
@@ -208,11 +174,11 @@ class SessionRegistry:
             The robot's lock is held by another session.
         """
         if robot_id not in self._robot_locks:
-            raise UnknownRobot(robot_id)
+            raise ct.UnknownRobot(robot_id)
 
         lock = self._robot_locks[robot_id]
         if lock.locked():
-            raise RobotBusy(robot_id)
+            raise ct.RobotBusy(robot_id)
 
         await lock.acquire()
 
@@ -310,7 +276,7 @@ class SessionRegistry:
         """
         session = self._get(token)
         if session.agent_base_url is None:
-            raise UnknownSession(token)
+            raise ct.UnknownSession(token)
         return RouteTarget(
             robot_id=session.robot_id,
             agent_base_url=session.agent_base_url,
@@ -320,7 +286,7 @@ class SessionRegistry:
     def current_token_for(self, robot_id: str) -> Optional[str]:
         """Return the token currently bound to ``robot_id`` or ``None`` if free."""
         if robot_id not in self._robot_to_token:
-            raise UnknownRobot(robot_id)
+            raise ct.UnknownRobot(robot_id)
         return self._robot_to_token[robot_id]
 
     def all_sessions(self) -> list[Session]:
@@ -335,4 +301,4 @@ class SessionRegistry:
         try:
             return self._sessions[token]
         except KeyError:
-            raise UnknownSession(token) from None
+            raise ct.UnknownSession(token) from None

@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Iterable, Sequence, Optional
-
+import opentrons_control.backend.app.global_variables as gv
 
 class SSHError(RuntimeError):
     """Raised when an SSH or SCP command fails."""
@@ -72,7 +72,7 @@ class SSHClient:
         cmd: Sequence[str],
         *,
         timeout: Optional[int] = None,
-    ) -> subprocess.CompletedProcess:
+    ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             list(cmd),
             capture_output=True,
@@ -136,36 +136,6 @@ class SSHClient:
         self._run(cmd)
 
 
-#: Absolute path to agent_main.py on the Opentrons system.
-#:
-#: The path is firmware-version-dependent: the user-packages overlay layout
-#: is an Opentrons system convention, and the python3.12 segment changes
-#: with the system Python version. If the agent fails to launch with
-#: "no such file", check here first.
-AGENT_MAIN_PATH = (
-    "/var/user-packages/usr/lib/python3.12/site-packages"
-    "/opentrons_drivers/agent/agent_main.py"
-)
-
-#: Root directory on the OT where all protocol launches are organised.
-OT_WORKDIR = "/data/protocols"
-
-#: Subdirectories created under each launch directory. The agent reads
-#: files from these by name relative to its cwd.
-LAUNCH_SUBDIRS = ("postbox", "plates", "logs")
-
-#: Environment variables exported into the agent process. RUNNING_ON_PI
-#: tells the Opentrons API it's on real hardware (suppresses an emulator
-#: warning, mostly cosmetic). PYTHONUNBUFFERED forces stdout/stderr to
-#: flush every line — without it, runlog output gets stuck in Python's
-#: block buffer and only appears in agent.log on process exit, defeating
-#: live diagnostics.
-AGENT_ENV = {
-    "RUNNING_ON_PI": "1",
-    "PYTHONUNBUFFERED": "1",
-}
-
-
 class OTBootstrap:
     """
     Opentrons-specific bootstrap helper.
@@ -203,7 +173,7 @@ class OTBootstrap:
     @property
     def launch_dir(self) -> str:
         """Absolute path of the per-launch directory on the OT."""
-        return f"{OT_WORKDIR}/{self.protocol_name}/{self.launch_id}"
+        return f"{gv.OT_WORKDIR}/{self.protocol_name}/{self.launch_id}"
 
     def subdir(self, name: str) -> str:
         """Absolute path of a named subdirectory inside the launch directory."""
@@ -213,7 +183,7 @@ class OTBootstrap:
 
     def prepare_dir(self) -> None:
         """Create the launch directory tree on the OT."""
-        paths = " ".join(self.subdir(name) for name in LAUNCH_SUBDIRS)
+        paths = " ".join(self.subdir(name) for name in gv.LAUNCH_SUBDIRS)
         self.ssh.run(f"mkdir -p {paths}")
 
     # ------------------------------------------------------------------
@@ -256,13 +226,13 @@ class OTBootstrap:
         Assumes the OT has ``nohup``, ``opentrons_execute`` on PATH, and
         ``opentrons_drivers`` installed at :data:`AGENT_MAIN_PATH`.
         """
-        env_prefix = " ".join(f"{k}={v}" for k, v in AGENT_ENV.items())
+        env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
 
         cmd = (
             f"systemctl stop opentrons-robot-server || true && "
             f"cd {self.launch_dir} && "
             f"nohup env {env_prefix} "
-            f"opentrons_execute {AGENT_MAIN_PATH} "
+            f"opentrons_execute {gv.AGENT_MAIN_PATH} "
             f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null &"
         )
         self.ssh.run(cmd)

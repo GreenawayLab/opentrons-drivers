@@ -45,15 +45,13 @@ import uvicorn
 from opentrons_control.backend.app.artifact import Artifact
 from opentrons_control.backend.app.api import create_app
 from opentrons_control.backend.app.sessions import Robot
-
+from opentrons_control.backend.app.custom_types import BackendConfig
+from opentrons_control.backend.app.global_variables import DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_CONFIG_PATH = "/data/backend.json"
-
-
-def load_robots(config: Dict[str, Any]) -> Dict[str, Robot]:
+def load_robots(config: BackendConfig) -> Dict[str, Robot]:
     """
     Build the :class:`Robot` mapping from a parsed configuration dict.
 

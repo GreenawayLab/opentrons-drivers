@@ -13,48 +13,11 @@ it when the session ends.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from typing import Any, Optional
-
+from dataclasses import dataclass
+import opentrons_control.backend.app.custom_types as ct
+from opentrons_control.backend.app.global_variables import HEALTHY_STATUSES
 import httpx
-
-
-# -------------------- Exceptions --------------------
-
-
-class OTClientError(RuntimeError):
-    """Base class for agent client errors."""
-
-
-class AgentBusy(OTClientError):
-    """Raised when the agent rejects a submission because its slot is occupied."""
-
-    def __init__(self, info: dict[str, Any]):
-        super().__init__(f"agent busy: {info}")
-        self.info = info
-
-
-class AgentNotReady(OTClientError):
-    """Raised when the agent returns 503 (hardware not finished initialising)."""
-
-
-class AgentBadRequest(OTClientError):
-    """Raised when the agent returns 400 for a malformed submission."""
-
-    def __init__(self, info: dict[str, Any]):
-        super().__init__(f"agent rejected request: {info}")
-        self.info = info
-
-
-class AgentUnreachable(OTClientError):
-    """Raised when the underlying HTTP transport fails (connection refused, timeout, etc.)."""
-
-
-class JobNotFound(OTClientError):
-    """Raised when a polled job_id is unknown to the agent."""
-
-
-# -------------------- Data shapes --------------------
 
 
 @dataclass(frozen=True)
@@ -65,17 +28,16 @@ class JobSnapshot:
     Mirrors the dict shape returned by the agent and pins down the field
     set so callers don't have to remember the wire format.
     """
-
     job_id: Optional[str]
     action: Optional[str]
-    status: Optional[str]      # "queued" | "running" | "complete" | "failed" | "idle" | None
+    status: Optional[str]
     error: Optional[str]
-    result: Any
+    result: ct.JSONType
     submitted_at: Optional[float]
     finished_at: Optional[float]
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "JobSnapshot":
+    def from_dict(cls, d: ct.JobSnapshotDict) -> "JobSnapshot":
         return cls(
             job_id=d.get("job_id"),
             action=d.get("action"),
@@ -90,14 +52,7 @@ class JobSnapshot:
     def is_terminal(self) -> bool:
         """True when no further state transitions are expected for this job."""
         return self.status in ("complete", "failed")
-
-
-# -------------------- Client --------------------
-
-
-#: Statuses returned by GET /health that mean the agent is fully operational.
-_HEALTHY_STATUSES = ("ready",)
-
+    
 
 class OTClient:
     """
@@ -164,10 +119,10 @@ class OTClient:
         if r.status_code == 503:
             return False
         if r.status_code != 200:
-            raise OTClientError(f"unexpected /health status {r.status_code}: {r.text}")
+            raise ct.OTClientError(f"unexpected /health status {r.status_code}: {r.text}")
 
         body = r.json()
-        return body.get("status") in _HEALTHY_STATUSES
+        return body.get("status") in HEALTHY_STATUSES
 
     async def wait_until_ready(
         self,
@@ -187,7 +142,7 @@ class OTClient:
             if await self.is_ready():
                 return
             if asyncio.get_event_loop().time() >= deadline:
-                raise AgentUnreachable(
+                raise ct.AgentUnreachable(
                     f"agent at {self._base_url} did not become ready within {timeout}s"
                 )
             await asyncio.sleep(interval)
@@ -199,7 +154,7 @@ class OTClient:
     async def submit_action(
         self,
         action: str,
-        payload: dict[str, Any],
+        payload: dict[str, ct.JSONType],
     ) -> JobSnapshot:
         """
         Submit a single action and return the agent's initial snapshot.
@@ -225,17 +180,17 @@ class OTClient:
                 json={"action": action, "payload": payload},
             )
         except httpx.HTTPError as e:
-            raise AgentUnreachable(str(e)) from e
+            raise ct.AgentUnreachable(str(e)) from e
 
         if r.status_code == 202:
             return JobSnapshot.from_dict(r.json())
         if r.status_code == 409:
-            raise AgentBusy(r.json())
+            raise ct.AgentBusy(r.json())
         if r.status_code == 503:
-            raise AgentNotReady(r.text)
+            raise ct.AgentNotReady(r.text)
         if r.status_code == 400:
-            raise AgentBadRequest(r.json())
-        raise OTClientError(f"unexpected /actions status {r.status_code}: {r.text}")
+            raise ct.AgentBadRequest(r.json())
+        raise ct.OTClientError(f"unexpected /actions status {r.status_code}: {r.text}")
 
     async def get_job(self, job_id: str) -> JobSnapshot:
         """
@@ -248,24 +203,24 @@ class OTClient:
         try:
             r = await self._http.get(f"/actions/{job_id}")
         except httpx.HTTPError as e:
-            raise AgentUnreachable(str(e)) from e
+            raise ct.AgentUnreachable(str(e)) from e
 
         if r.status_code == 200:
             return JobSnapshot.from_dict(r.json())
         if r.status_code == 404:
-            raise JobNotFound(job_id)
-        raise OTClientError(f"unexpected /actions/{{id}} status {r.status_code}: {r.text}")
+            raise ct.JobNotFound(job_id)
+        raise ct.OTClientError(f"unexpected /actions/{{id}} status {r.status_code}: {r.text}")
 
     async def get_current(self) -> JobSnapshot:
         """Return a snapshot of whatever job currently occupies the slot."""
         try:
             r = await self._http.get("/actions/current")
         except httpx.HTTPError as e:
-            raise AgentUnreachable(str(e)) from e
+            raise ct.AgentUnreachable(str(e)) from e
 
         if r.status_code == 200:
             return JobSnapshot.from_dict(r.json())
-        raise OTClientError(f"unexpected /actions/current status {r.status_code}: {r.text}")
+        raise ct.OTClientError(f"unexpected /actions/current status {r.status_code}: {r.text}")
 
     async def wait_for_job(
         self,
@@ -309,4 +264,4 @@ class OTClient:
 
         if r.status_code in (200, 202):
             return
-        raise OTClientError(f"unexpected /abort status {r.status_code}: {r.text}")
+        raise ct.OTClientError(f"unexpected /abort status {r.status_code}: {r.text}")

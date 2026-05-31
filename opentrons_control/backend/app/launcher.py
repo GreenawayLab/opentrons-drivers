@@ -31,39 +31,20 @@ from pathlib import Path
 from typing import AsyncIterator, Mapping, Optional, Any
 
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
-from opentrons_control.backend.app.ot_client import OTClient, OTClientError
+from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.sessions import (
-    Mode,
     Session,
     SessionRegistry,
 )
-
-
-#: Wall-clock budget for the agent to report ready after launch. Hardware
-#: boot typically takes 60-80 seconds; the headroom covers slow USB
-#: enumeration and pipette discovery.
-DEFAULT_READINESS_TIMEOUT = 180.0
-
-
-class BootstrapFailed(RuntimeError):
-    """
-    Raised when a session cannot reach the ``active`` status.
-
-    The session is left cleaned up (marked ``failed``, lock released)
-    before the exception propagates.
-    """
-
-
-class FileFormatError(ValueError):
-    """Raised when a file entry cannot be serialised as written."""
-
+import opentrons_control.backend.app.custom_types as ct
+from opentrons_control.backend.app.global_variables import DEFAULT_READINESS_TIMEOUT
 
 # -------------------- File materialisation --------------------
 
 
 @asynccontextmanager
 async def _materialise_buckets(
-    buckets: Mapping[str, Mapping[str, Any]],
+    buckets: Mapping[str, Mapping[str, ct.JSONType]],
 ) -> AsyncIterator[dict[str, list[Path]]]:
     """
     Stage one or more named buckets of files inside a temporary directory.
@@ -91,7 +72,7 @@ async def _materialise_buckets(
             for name, content in files.items():
                 suffix = Path(name).suffix.lower()
                 if suffix != ".json":
-                    raise FileFormatError(
+                    raise ct.FileFormatError(
                         f"{subdir}/{name}: only .json is supported"
                     )
 
@@ -113,8 +94,8 @@ async def launch_session(
     *,
     robot_id: str,
     protocol_name: str,
-    mode: Mode,
-    files: Mapping[str, Mapping[str, Any]],
+    mode: ct.Mode,
+    files: Mapping[str, Mapping[str, ct.JSONType]],
     client_id: Optional[str] = None,
     readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
 ) -> Session:
@@ -188,9 +169,9 @@ async def launch_session(
         async with OTClient(robot.agent_base_url) as client:
             await client.wait_until_ready(timeout=readiness_timeout)
 
-    except (SSHError, OTClientError, OSError) as e:
+    except (SSHError, ct.OTClientError, OSError) as e:
         registry.mark_failed(session.token, message=str(e))
         registry.release(session.token)
-        raise BootstrapFailed(str(e)) from e
+        raise ct.BootstrapFailed(str(e)) from e
 
     return registry.mark_active(session.token, robot.agent_base_url)

@@ -16,7 +16,7 @@ from pathlib import Path
 import sys
 
 
-def main():
+def main() -> None:
     repo_root = Path(__file__).resolve().parent
     pyproject = Path("C:/Users/Aleksandr Ostudin/Documents/Laba/Lond/code/opentrons-drivers/pyproject.toml")  # repo_root / "pyproject.toml"
 

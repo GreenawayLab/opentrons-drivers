@@ -20,6 +20,9 @@ The module exposes no top-level FastAPI instance. Callers construct the
 app via :func:`create_app`, passing in a fully-resolved robot registry.
 This keeps configuration loading (and the secret handling that comes with
 it) out of the library proper.
+
+This module is excluded from strict no Any typing by mypy because it is 
+somehow conflicting with the pydantic BaseModel.
 """
 
 from __future__ import annotations
@@ -27,32 +30,23 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import Any, AsyncIterator, Dict, Mapping, Optional
-
-from fastapi import FastAPI, HTTPException
+from typing import AsyncIterator, Dict, Mapping, Optional
 from pydantic import BaseModel, Field
 
-from opentrons_control.backend.app.launcher import (
-    BootstrapFailed,
-    FileFormatError,
-    launch_session,
-)
+from fastapi import FastAPI, HTTPException
+
+from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.sessions import (
-    Mode,
     Robot,
-    RobotBusy,
     Session,
-    SessionRegistry,
-    UnknownRobot,
-    UnknownSession,
+    SessionRegistry
 )
+import opentrons_control.backend.app.custom_types as ct
 
 
 logger = logging.getLogger(__name__)
 
-
-# -------------------- Request / response models --------------------
 
 
 class CreateSessionRequest(BaseModel):
@@ -60,8 +54,8 @@ class CreateSessionRequest(BaseModel):
 
     robot_id: str
     protocol_name: str
-    mode: Mode = "auto"
-    files: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    mode: ct.Mode = "auto"
+    files: Dict[str, Dict[str, ct.JSONType]] = Field(default_factory=dict)
     client_id: Optional[str] = None
 
 
@@ -97,6 +91,7 @@ class RobotInfoResponse(BaseModel):
     id: str
     host: str
     agent_port: int
+
 
 
 # -------------------- Helpers --------------------
@@ -189,16 +184,16 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
-                files=req.files,  # type: ignore[arg-type]
+                files=req.files,  
                 client_id=req.client_id,
             )
-        except UnknownRobot:
+        except ct.UnknownRobot:
             raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
-        except RobotBusy as e:
+        except ct.RobotBusy as e:
             raise HTTPException(status_code=409, detail=str(e))
-        except FileFormatError as e:
+        except ct.FileFormatError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        except BootstrapFailed as e:
+        except ct.BootstrapFailed as e:
             raise HTTPException(status_code=502, detail=str(e))
 
         return CreateSessionResponse(
@@ -215,7 +210,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     async def get_route(token: str) -> RouteResponse:
         try:
             target = registry.route(token)
-        except UnknownSession:
+        except ct.UnknownSession:
             raise HTTPException(status_code=404, detail="unknown session")
         return RouteResponse(
             robot_id=target.robot_id,
@@ -230,7 +225,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     async def get_details(token: str) -> SessionDetailsResponse:
         try:
             session = registry.get(token)
-        except UnknownSession:
+        except ct.UnknownSession:
             raise HTTPException(status_code=404, detail="unknown session")
         return _session_to_details(session)
 
@@ -238,7 +233,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     async def abort_session(token: str) -> dict[str, str]:
         try:
             registry.get(token)
-        except UnknownSession:
+        except ct.UnknownSession:
             raise HTTPException(status_code=404, detail="unknown session")
         await _abort_session(registry, token)
         return {"status": "aborted"}

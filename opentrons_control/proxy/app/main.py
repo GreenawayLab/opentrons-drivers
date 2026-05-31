@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional, TypedDict
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -46,6 +46,13 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "200"))
+
+# -------------------- Local typing --------------------
+
+class RouteDict(TypedDict):
+    robot_id: str
+    agent_base_url: str
+    status: str
 
 
 # -------------------- App lifespan --------------------
@@ -79,7 +86,7 @@ def _bearer(authorization: Optional[str]) -> str:
     return parts[1]
 
 
-async def _resolve_route(http: httpx.AsyncClient, token: str) -> dict[str, Any]:
+async def _resolve_route(http: httpx.AsyncClient, token: str) -> RouteDict:
     """
     Look up a session token against the backend.
 
@@ -100,7 +107,7 @@ async def _resolve_route(http: httpx.AsyncClient, token: str) -> dict[str, Any]:
             detail=f"backend returned {r.status_code} on route lookup",
         )
 
-    route = r.json()
+    route: RouteDict = r.json()
     if route.get("status") != "active":
         raise HTTPException(
             status_code=410,
