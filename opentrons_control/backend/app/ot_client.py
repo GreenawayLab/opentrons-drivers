@@ -13,7 +13,7 @@ it when the session ends.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Optional
 from dataclasses import dataclass
 import opentrons_control.backend.app.custom_types as ct
 from opentrons_control.backend.app.global_variables import HEALTHY_STATUSES

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional, TypedDict
+from typing import AsyncIterator, Optional, TypedDict
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response

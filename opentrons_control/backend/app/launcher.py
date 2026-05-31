@@ -28,7 +28,7 @@ import json
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Mapping, Optional, Any
+from typing import AsyncIterator, Mapping, Optional
 
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
 from opentrons_control.backend.app.ot_client import OTClient
