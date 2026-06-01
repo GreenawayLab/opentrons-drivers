@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from typing import AsyncIterator, Dict, Mapping, Optional
+from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
 from fastapi import FastAPI, HTTPException
@@ -55,7 +55,7 @@ class CreateSessionRequest(BaseModel):
     robot_id: str
     protocol_name: str
     mode: ct.Mode = "auto"
-    files: Dict[str, Dict[str, ct.JSONType]] = Field(default_factory=dict)
+    files: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     client_id: Optional[str] = None
 
 
