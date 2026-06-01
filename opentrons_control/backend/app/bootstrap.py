@@ -226,12 +226,12 @@ class OTBootstrap:
         Assumes the OT has ``nohup``, ``opentrons_execute`` on PATH, and
         ``opentrons_drivers`` installed at :data:`AGENT_MAIN_PATH`.
         """
-        env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
+        #env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
 
         cmd = (
             f"systemctl stop opentrons-robot-server || true && "
             f"cd {self.launch_dir} && "
-            f"nohup env {env_prefix} "
+            f"nohup "
             f"opentrons_execute {gv.AGENT_MAIN_PATH} "
             f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null &"
         )
