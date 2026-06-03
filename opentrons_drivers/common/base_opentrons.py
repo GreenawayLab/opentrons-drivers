@@ -149,7 +149,7 @@ class Opentrons:
                     )
                 else:
                     plate = self.protocol.load_labware(
-                        labware_name=labware_type, location=deck_slot
+                        load_name=labware_type, location=deck_slot
                     )
 
                 plate.set_offset(
