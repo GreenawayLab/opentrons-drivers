@@ -10,7 +10,8 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pip-tools", "pre-commit", "pytest", "pytest-cov", "pytest-mock"]
+dev = ["ruff", "mypy", "pip-tools", 
+"pre-commit", "pytest", "pytest-cov", "pytest-mock", pydantic]
 
 
 [tool.mypy]
