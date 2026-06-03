@@ -70,7 +70,7 @@ def advanced_liquid_transfer(pipette: InstrumentContext,
             None
         """
 
-        amts = help.liquid_batching(pipette, amt)
+        amts = help.liquid_batching(pipette, amount)
         for a in amts:
             can = pipette.max_volume - a
             initial_ag = min(can * 0.3 * airgap, can)
