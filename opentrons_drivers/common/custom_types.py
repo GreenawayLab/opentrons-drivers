@@ -37,6 +37,7 @@ class SystemState(TypedDict, total=False):
     plate: str | None
     well: str | None
     last_action: str | None             # registry key
+    last_args: Dict[str, JSONType]      # full arg dict of the last sampler call
     timestamp: float                    # when the last action happened
 
 class StaticCtx(TypedDict):
@@ -44,7 +45,7 @@ class StaticCtx(TypedDict):
     core_amounts: Dict[str, Dict[str, CoreWell]]
     stock_amounts: Dict[str, List[StockWell]]
     pipettes: Dict[str, InstrumentContext]
-    state: SystemState
+    system_state: SystemState
 
 #------------ Action Function Type Definition ------------
 
@@ -83,5 +84,3 @@ class AgentConfig(TypedDict):
     """What should agent monitor and what to do."""
     trigger: str  # e.g. "totally_not_a_file.json"
     action: str   # e.g. "transfer_liquid"
-
-

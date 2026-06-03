@@ -166,13 +166,12 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     if tip_off:
         pipette.drop_tip()
 
-    state = ctx.get("agent_state")
-    if state is not None:
-        # receiver always defines the new "location"
-        state["plate"] = receiver[0]
-        state["well"] = receiver[1]
-        state["last_action"] = "transfer"
-        state["timestamp"] = time.time()
+    state = ctx["system_state"]
+    # receiver always defines the new "location"
+    state["plate"] = receiver[0]
+    state["well"] = receiver[1]
+    state["last_action"] = "transfer"
+    state["timestamp"] = time.time()
 
     return True
 
@@ -199,13 +198,16 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
                 first_well = next(iter(core[first_plate].keys()))
                 pos = core[first_plate][first_well]["position"]
                 pip.move_to(pos.top(50))
+            return
 
         if mode_prev == "wash":
             wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
             pip.move_to(wash.top(50))
+            return
         else:
             pos = ctx["core_amounts"][plate][well]["position"]
             pip.move_to(pos.top(50))
+            return
 
     # ---------- LIFT ----------
     if mode == "lift":

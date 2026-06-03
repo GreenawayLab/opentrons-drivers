@@ -137,7 +137,7 @@ class Opentrons:
         for plate_name, plate_info in assigned.items():
             labware_type = plate_info["type"]
             deck_slot = plate_info["place"]
-            offset = plate_info.get("offset", {"x": 0, "y": 0, "z": 0})
+            offset = plate_info.get("offset") or {"x": 0, "y": 0, "z": 0}
 
             # Tipracks typically use standard names but may use custom definitions
             if plate_name.startswith("tiprack_"):
@@ -223,7 +223,7 @@ class Opentrons:
                 wells_def = json.load(f)["wells"]
             well_names = list(wells_def.keys())
 
-            content = plate_info.get("content", {})
+            content = plate_info.get("content") or {}
 
             # ------------------ Stock plates ------------------
             if is_stock:
