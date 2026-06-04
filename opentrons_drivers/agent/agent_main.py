@@ -22,7 +22,7 @@ metadata = {
     "protocolName": "ot_agent",
     "author": "Aleksandr Ostudin",
     "description": "Activate OT based on HTTP requests",
-    "apiLevel": "2.13",
+    "apiLevel": "2.24",
 }
 
 
