@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from opentrons_control.backend.app.deps import templates
+from opentrons_control.backend.app.settings.deps import templates
 from opentrons_control.backend.app.security import CurrentUser, require_admin
 from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.db.runner import execute, fetch

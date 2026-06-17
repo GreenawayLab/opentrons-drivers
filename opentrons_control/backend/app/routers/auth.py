@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from opentrons_control.backend.app.settings.deps import templates
-from opentrons_control.backend.app.settings.security import (
+from opentrons_control.backend.app.security import (
     create_token,
     dashboard_for,
     get_current_user_redirect,
