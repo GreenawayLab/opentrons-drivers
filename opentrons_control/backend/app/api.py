@@ -16,12 +16,12 @@ clients. Two endpoint groups:
     instruction document into a queue of actions lives outside this
     module.
 
-The module exposes no top-level FastAPI instance. Callers construct the
-app via :func:`create_app`, passing in a fully-resolved robot registry.
-This keeps configuration loading (and the secret handling that comes with
-it) out of the library proper.
+Human-facing routes (login and admin management) are mounted from the
+routers package. The module exposes no top-level FastAPI instance: callers
+construct the app via :func:`create_app`, passing in a fully-resolved robot
+registry. This keeps configuration loading out of the library proper.
 
-This module is excluded from strict no Any typing by mypy because it is 
+This module is excluded from strict no Any typing by mypy because it is
 somehow conflicting with the pydantic BaseModel.
 """
 
@@ -30,10 +30,13 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from pathlib import Path
 from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
@@ -42,6 +45,7 @@ from opentrons_control.backend.app.robot_sessions import (
     Session,
     SessionRegistry
 )
+from opentrons_control.backend.app.routers import auth, admin
 import opentrons_control.backend.app.settings.custom_types as ct
 
 
@@ -152,6 +156,21 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     app = FastAPI(title="opentrons-control-backend", lifespan=lifespan)
 
     # ------------------------------------------------------------------
+    # Human-facing routes (login, admin management)
+    # ------------------------------------------------------------------
+
+    app.include_router(auth.router)
+    app.include_router(admin.router)
+
+    _static = Path(__file__).parent / "static"
+    if _static.exists():
+        app.mount("/static", StaticFiles(directory=str(_static)), name="static")
+
+    @app.get("/")
+    async def root() -> RedirectResponse:
+        return RedirectResponse(url="/login")
+
+    # ------------------------------------------------------------------
     # Health and metadata
     # ------------------------------------------------------------------
 
@@ -184,7 +203,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
-                files=req.files,  
+                files=req.files,
                 client_id=req.client_id,
             )
         except ct.UnknownRobot:
