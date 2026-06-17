@@ -42,36 +42,38 @@ from typing import Dict
 
 import uvicorn
 
-from opentrons_control.backend.app.artifact import Artifact
 from opentrons_control.backend.app.api import create_app
-from opentrons_control.backend.app.sessions import Robot
-from opentrons_control.backend.app.custom_types import BackendConfig
-from opentrons_control.backend.app.global_variables import DEFAULT_CONFIG_PATH
+from opentrons_control.backend.app.robot_sessions import Robot
+from opentrons_control.backend.app.settings.global_variables import DEFAULT_CONFIG_PATH
+from opentrons_control.backend.app.vault import materialize_key
+from opentrons_control.backend.app.db.db_session import SessionLocal
+from opentrons_control.backend.app.db.runner import fetch
 
 logger = logging.getLogger(__name__)
 
 
-def load_robots(config: BackendConfig) -> Dict[str, Robot]:
-    """
-    Build the :class:`Robot` mapping from a parsed configuration dict.
-
-    Per-robot ``key_name`` entries are resolved against the artifact store
-    declared in ``config["artifacts"]["base_url"]``. Each key is fetched
-    (or read from the local cache) and the resulting absolute path is
-    stored on the :class:`Robot` instance.
-    """
-    artifact = Artifact(base_url=config["artifacts"]["base_url"])
+def load_robots() -> Dict[str, Robot]:
+    """Read enabled robots from the database and resolve their SSH keys."""
     robots: Dict[str, Robot] = {}
-
-    for robot_id, entry in config["robots"].items():
-        key_path = artifact.resolve_key(entry["key_name"])
-        robots[robot_id] = Robot(
-            id=robot_id,
-            host=entry["host"],
-            user=entry["user"],
-            key_path=key_path,
-            agent_port=entry.get("agent_port", 9000),
-        )
+    db = SessionLocal()
+    try:
+        for row in fetch(db, "robots/list_enabled.sql"):
+            key_name = row["key_name"]
+            if not key_name:
+                logger.warning(
+                    "robot %s has no key assigned; skipping", row["robot_id"]
+                )
+                continue
+            robots[row["robot_id"]] = Robot(
+                id=row["robot_id"],
+                host=row["host"],
+                user=row["ssh_user"],
+                key_path=materialize_key(db, key_name),
+                agent_port=row["agent_port"],
+            )
+    finally:
+        db.close()
+    logger.info("loaded %d robot(s) from database", len(robots))
     return robots
 
 

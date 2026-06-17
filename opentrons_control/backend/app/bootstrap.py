@@ -16,7 +16,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import Iterable, Sequence, Optional
-import opentrons_control.backend.app.global_variables as gv
+import opentrons_control.backend.app.settings.global_variables as gv
 
 class SSHError(RuntimeError):
     """Raised when an SSH or SCP command fails."""

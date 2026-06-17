@@ -37,12 +37,12 @@ from fastapi import FastAPI, HTTPException
 
 from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
-from opentrons_control.backend.app.sessions import (
+from opentrons_control.backend.app.robot_sessions import (
     Robot,
     Session,
     SessionRegistry
 )
-import opentrons_control.backend.app.custom_types as ct
+import opentrons_control.backend.app.settings.custom_types as ct
 
 
 logger = logging.getLogger(__name__)

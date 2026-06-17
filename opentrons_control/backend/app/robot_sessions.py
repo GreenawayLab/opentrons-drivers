@@ -21,7 +21,7 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass, field
-import opentrons_control.backend.app.custom_types as ct
+import opentrons_control.backend.app.settings.custom_types as ct
 from pathlib import Path
 from typing import Dict, Optional
 

@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 from dataclasses import dataclass
-import opentrons_control.backend.app.custom_types as ct
-from opentrons_control.backend.app.global_variables import HEALTHY_STATUSES
+import opentrons_control.backend.app.settings.custom_types as ct
+from opentrons_control.backend.app.settings.global_variables import HEALTHY_STATUSES
 import httpx
 
 
