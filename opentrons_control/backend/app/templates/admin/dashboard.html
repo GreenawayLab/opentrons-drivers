@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Robots{% endblock %}
+{% block body %}
+  <div class="bar">
+    <h1>Robots</h1>
+    <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+  </div>
+
+  <p class="note">Saved changes update the database. The running registry is built at
+  startup, so a new or edited robot becomes active after the backend restarts.</p>
+
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Host</th><th>User</th><th>Port</th><th>Key</th><th>Enabled</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for r in robots %}
+      <tr>
+        <td>{{ r.robot_id }}</td>
+        <td>{{ r.host }}</td>
+        <td>{{ r.ssh_user }}</td>
+        <td>{{ r.agent_port }}</td>
+        <td>
+          {% if r.key_name and r.key_name in secret_names %}set &#10003;
+          {% elif r.key_name %}<span class="error">missing</span>
+          {% else %}<span class="muted">none</span>{% endif %}
+        </td>
+        <td>{{ "yes" if r.enabled else "no" }}</td>
+        <td>
+          <form method="post" action="/admin/robots/{{ r.robot_id }}/delete"
+                onsubmit="return confirm('Delete {{ r.robot_id }}?')">
+            <button>Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">No robots yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Add / update robot</h2>
+  <form method="post" action="/admin/robots">
+    <label>Robot ID<input name="robot_id" placeholder="ot-3" required></label>
+    <label>Host<input name="host" placeholder="10.0.1.12" required></label>
+    <label>SSH user<input name="ssh_user" value="root"></label>
+    <label>Agent port<input name="agent_port" type="number" value="9000"></label>
+    <label>SSH private key <span class="muted">(leave blank to keep the existing key)</span>
+      <textarea name="ssh_key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+    </label>
+    <button type="submit">Save robot</button>
+  </form>
+{% endblock %}
