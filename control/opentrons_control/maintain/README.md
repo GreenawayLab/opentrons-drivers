@@ -51,6 +51,20 @@ expected driver version, where the drivers project lives, the path to
 on-robot site-packages / staging paths. Relative paths are resolved against
 `deploy.toml`'s own directory.
 
+`deploy.toml` is **gitignored** — it is per-deployment config you hand-edit on
+the control machine, so keeping it untracked means editing it never conflicts
+with a `git pull`. Create it once from the committed template:
+
+```bash
+cp control/opentrons_control/maintain/deploy.example.toml \
+   control/opentrons_control/maintain/deploy.toml
+```
+
+Note that the *driver version actually deployed* comes from
+`drivers/pyproject.toml` (a tracked, committed value) — bump that via a normal
+commit and `git pull` it onto the control machine. `expected_version` in
+`deploy.toml` is only a local guard that must match it.
+
 `backend.json` is runtime config, not source — it is gitignored and lives in
 the Docker `data/` volume. Copy the committed template to create it:
 

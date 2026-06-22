@@ -33,6 +33,6 @@ build-backend = "setuptools.build_meta"
 include = ["opentrons_control*"]
 
 [tool.setuptools.package-data]
-# Ship the deploy config so `ot-update-robots` has its default config even
-# in a non-editable install.
-opentrons_control = ["maintain/deploy.toml"]
+# Ship the deploy config template so it travels with a non-editable install.
+# The real deploy.toml is gitignored, operator-created config.
+opentrons_control = ["maintain/deploy.example.toml"]

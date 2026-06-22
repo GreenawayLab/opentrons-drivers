@@ -134,5 +134,9 @@ dmypy.json
 # Runtime control-plane data (backend.json, SSH keys, artifacts) mounted into Docker
 /control/opentrons_control/data
 
+# Operator-local deploy config (copied from deploy.example.toml). Untracked
+# so it can be hand-edited on the control machine without git conflicts.
+/control/opentrons_control/maintain/deploy.toml
+
 # Built drivers wheels staged for deployment to robots
 dist/wheels/

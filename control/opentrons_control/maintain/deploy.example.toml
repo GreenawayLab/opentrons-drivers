@@ -1,8 +1,18 @@
-# Robot fleet deployment configuration (read by `ot-update-robots`).
+# Robot fleet deployment configuration TEMPLATE.
 #
-# Edit `expected_version` together with `version` in
-# ../../../drivers/pyproject.toml, then run `ot-update-robots` on the
-# control machine to roll the new drivers out to every attached robot.
+# This file is a committed template. The real config (`deploy.toml`, in this
+# same directory) is gitignored, so you can edit it on the control machine
+# without ever causing a git conflict on the next pull. Create it once with:
+#
+#     cp deploy.example.toml deploy.toml
+#
+# then edit deploy.toml for your environment.
+#
+# `expected_version` is a guard: it must match `version` in
+# ../../../drivers/pyproject.toml or `ot-update-robots` aborts before
+# touching any robot. The driver version that actually gets deployed comes
+# from the drivers/ package itself (a tracked, committed value); bump that
+# via a normal commit and `git pull` it onto the control machine.
 
 [drivers]
 # Guard: the wheel built from the drivers project MUST report this version

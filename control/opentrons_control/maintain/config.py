@@ -86,7 +86,12 @@ class DeployConfig:
 
 
 def default_config_path() -> Path:
-    """Path to the ``deploy.toml`` shipped alongside this module."""
+    """Path to the operator-local ``deploy.toml`` alongside this module.
+
+    This file is gitignored; create it once by copying
+    ``deploy.example.toml``. See :func:`load_deploy_config` for the error
+    raised when it is missing.
+    """
     return Path(__file__).resolve().parent / "deploy.toml"
 
 
@@ -108,7 +113,13 @@ def load_deploy_config(config_path: Path | None = None) -> DeployConfig:
     """
     config_path = (config_path or default_config_path()).resolve()
     if not config_path.exists():
-        raise ConfigError(f"deploy config not found: {config_path}")
+        example = config_path.parent / "deploy.example.toml"
+        hint = (
+            f"\n  Create it from the template: cp {example} {config_path}"
+            if example.exists()
+            else ""
+        )
+        raise ConfigError(f"deploy config not found: {config_path}{hint}")
 
     base = config_path.parent
     raw = tomllib.loads(config_path.read_text())
