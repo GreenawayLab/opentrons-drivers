@@ -131,4 +131,8 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-/opentrons_control/data
+# Runtime control-plane data (backend.json, SSH keys, artifacts) mounted into Docker
+/control/opentrons_control/data
+
+# Built drivers wheels staged for deployment to robots
+dist/wheels/

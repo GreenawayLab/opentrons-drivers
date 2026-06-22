@@ -1,0 +1,38 @@
+[project]
+name = "opentrons_control"
+# Version of the control-plane software (backend / proxy / frontend +
+# maintenance tooling). Bump this, then rebuild and redeploy the Docker
+# stack (`make deploy-control`) to update the control machine.
+version = "0.1.0"
+description = "Control-plane services and maintenance tooling for a fleet of Opentrons robots"
+authors = [
+    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
+    {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "pydantic",
+    "requests",
+    "build",  # used by the wheel builder in opentrons_control.maintain
+    "tomli; python_version < '3.11'",  # deploy.toml parsing on Python 3.10
+]
+
+[project.scripts]
+# Run on the control machine to build the drivers wheel and roll it out.
+ot-build-wheel = "opentrons_control.maintain.build_wheel:main"
+ot-update-robots = "opentrons_control.maintain.update_robots:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["opentrons_control*"]
+
+[tool.setuptools.package-data]
+# Ship the deploy config so `ot-update-robots` has its default config even
+# in a non-editable install.
+opentrons_control = ["maintain/deploy.toml"]

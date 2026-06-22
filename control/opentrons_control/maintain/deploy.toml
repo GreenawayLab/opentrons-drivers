@@ -1,0 +1,39 @@
+# Robot fleet deployment configuration (read by `ot-update-robots`).
+#
+# Edit `expected_version` together with `version` in
+# ../../../drivers/pyproject.toml, then run `ot-update-robots` on the
+# control machine to roll the new drivers out to every attached robot.
+
+[drivers]
+# Guard: the wheel built from the drivers project MUST report this version
+# or the deploy aborts. Keep in sync with drivers/pyproject.toml. Set to
+# something falsey / remove and pass --no-version-check to disable.
+expected_version = "0.1.0"
+
+# Path to the drivers/ project root (contains pyproject.toml). Relative
+# paths are resolved against this file's directory.
+project_dir = "../../../drivers"
+
+[robots]
+# The robot fleet is defined once, in the backend config the control plane
+# already uses. We read host/user/key_name from its "robots" section.
+backend_config = "/data/backend.json"
+
+# Directory holding the SSH private keys referenced by each robot's
+# "key_name" in backend.json.
+ssh_key_dir = "/data/keys"
+
+[install]
+# On-robot site-packages overlay where opentrons_drivers is unpacked.
+# Mirrors AGENT_MAIN_PATH in backend/app/global_variables.py — if the
+# Opentrons system Python version changes, update both.
+site_packages = "/var/user-packages/usr/lib/python3.12/site-packages"
+
+# Scratch directory on the robot for the uploaded wheel.
+staging_dir = "/data/driver_updates"
+
+# Interpreter on the robot used to unpack the wheel (stdlib zipfile only).
+python = "python3"
+
+# Set true if writing into the overlay / running python there needs sudo.
+use_sudo = false
