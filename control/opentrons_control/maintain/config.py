@@ -10,13 +10,9 @@ fleet is defined in exactly one place.
 from __future__ import annotations
 
 import json
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-
-try:  # Python 3.11+
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - 3.10 fallback
-    import tomli as tomllib  # type: ignore[no-redef]
 
 
 class ConfigError(RuntimeError):

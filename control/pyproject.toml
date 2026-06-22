@@ -9,7 +9,9 @@ authors = [
     {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
     {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
 ]
-requires-python = ">=3.10"
+# tomllib (used to parse deploy.toml) is stdlib from 3.11; the control
+# machine runs 3.11+ (Docker image is python:3.12, CI is 3.13).
+requires-python = ">=3.11"
 dependencies = [
     "fastapi",
     "uvicorn",
@@ -17,7 +19,6 @@ dependencies = [
     "pydantic",
     "requests",
     "build",  # used by the wheel builder in opentrons_control.maintain
-    "tomli; python_version < '3.11'",  # deploy.toml parsing on Python 3.10
 ]
 
 [project.scripts]
