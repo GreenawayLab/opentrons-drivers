@@ -5,6 +5,10 @@ Passwords are hashed with PBKDF2-HMAC-SHA256. A session is a JWT carried in an
 httpOnly cookie holding only the user id; role and name are read from the live
 user row on every request, so a soft-deleted account loses access on its next
 request and role changes take effect without re-login.
+
+The gating dependencies speak HTTP status, not navigation: an unauthenticated
+request gets 401 and a wrong-role request gets 403. Deciding what a browser
+sees in those cases (a login page, a redirect) is the frontend's job.
 """
 
 from __future__ import annotations
@@ -59,16 +63,6 @@ class CurrentUser:
         self.name = name
 
 
-_ROLE_DASHBOARDS = {
-    "admin": "/admin/dashboard",
-    "user": "/user/dashboard",
-}
-
-
-def dashboard_for(role: str) -> str:
-    return _ROLE_DASHBOARDS.get(role, "/login")
-
-
 def _resolve_user(access_token: str | None, db: Session) -> CurrentUser | None:
     if not access_token:
         return None
@@ -85,24 +79,23 @@ def _resolve_user(access_token: str | None, db: Session) -> CurrentUser | None:
     return CurrentUser(id=row["id"], role=row["role"], name=row["name"])
 
 
-def get_current_user_redirect(
+def get_current_user(
     access_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
 ) -> CurrentUser:
-    """For HTML routes: redirect to /login when unauthenticated."""
     user = _resolve_user(access_token, db)
     if not user:
-        raise HTTPException(status.HTTP_303_SEE_OTHER, headers={"Location": "/login"})
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="not authenticated")
     return user
 
 
-def require_admin(user: CurrentUser = Depends(get_current_user_redirect)) -> CurrentUser:
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if user.role != "admin":
-        raise HTTPException(status.HTTP_303_SEE_OTHER, headers={"Location": dashboard_for(user.role)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="admin role required")
     return user
 
 
-def require_user(user: CurrentUser = Depends(get_current_user_redirect)) -> CurrentUser:
+def require_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if user.role != "user":
-        raise HTTPException(status.HTTP_303_SEE_OTHER, headers={"Location": dashboard_for(user.role)})
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user role required")
     return user

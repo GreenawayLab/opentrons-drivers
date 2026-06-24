@@ -1,41 +1,46 @@
 """
 Routing proxy for the Opentrons control plane.
 
-The proxy is the only network ingress reachable by external clients. It
-holds no business logic and no durable state: every request is either
-forwarded to the backend (control plane) or routed to an agent on the
-isolated robot subnet (data plane).
-
-Two endpoint groups:
+The proxy is the only network ingress reachable by external clients. It holds
+no business logic and no durable state: every request is forwarded to one of
+three places.
 
 Session lifecycle (``/sessions``)
-    Forwarded to the backend, which owns session state and drives the
-    SSH bootstrap of agents.
+    Forwarded to the backend, which owns session state and drives the SSH
+    bootstrap of agents.
 
 Action surface (``/actions``)
-    Authenticated by a session token in the ``Authorization`` header. The
-    proxy looks the token up against the backend, resolves it to an
-    agent base URL, and forwards the request body verbatim.
+    Authenticated by a session token in the ``Authorization`` header. The proxy
+    looks the token up against the backend, resolves it to an agent base URL,
+    and forwards the request body verbatim.
 
-The backend is consulted on every action request; there is no caching in
-this revision. Routing is correct at the cost of a small per-request
-round trip to the backend.
+Human console (``/``, ``/login``, ``/logout``, ``/admin/*``, ``/user/*``,
+``/static/*``)
+    Forwarded to the frontend, which renders HTML by calling the backend's JSON
+    API. These are the only browser-facing paths; the forward is cookie-aware
+    so the session cookie survives the hop in both directions.
+
+Everything else is refused with 404. That allowlist is load-bearing: it is what
+keeps the backend's ``/internal/*``, ``/api/*``, ``/manual/*`` and ``/robots``
+surfaces unreachable from outside, since a naive catch-all would proxy them
+straight to an unauthenticated control plane.
 
 Configuration is via environment variables:
 
 ``BACKEND_URL``
     Base URL of the backend API. Defaults to ``http://backend:8000``.
+``FRONTEND_URL``
+    Base URL of the frontend renderer. Defaults to ``http://frontend:8000``.
 ``PROXY_TIMEOUT``
-    Per-request timeout (seconds) for outbound calls. Defaults to ``200``
-    to accommodate the long-poll on session creation while the OT agent
-    boots.
+    Per-request timeout (seconds) for outbound calls. Defaults to ``200`` to
+    accommodate the long-poll on session creation while the OT agent boots.
 """
 
 from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional, TypedDict
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
@@ -45,14 +50,20 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://frontend:8000").rstrip("/")
 PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "200"))
 
-# -------------------- Local typing --------------------
 
-class RouteDict(TypedDict):
-    robot_id: str
-    agent_base_url: str
-    status: str
+#: Path prefixes the proxy will forward to the frontend. Anything not matched
+#: here (and not matched by an explicit route below) is refused with 404.
+_HUMAN_PREFIXES = ("/login", "/logout", "/admin", "/user", "/static")
+
+
+def _is_human_route(path: str) -> bool:
+    """True if ``path`` is a browser-facing route the frontend should render."""
+    if path == "/":
+        return True
+    return any(path == p or path.startswith(p + "/") for p in _HUMAN_PREFIXES)
 
 
 # -------------------- App lifespan --------------------
@@ -60,7 +71,7 @@ class RouteDict(TypedDict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Hold a long-lived async HTTP client for outbound calls."""
+    """Hold a long-lived async HTTP client for the session/action forwarders."""
     async with httpx.AsyncClient(timeout=PROXY_TIMEOUT) as client:
         app.state.http = client
         yield
@@ -86,13 +97,13 @@ def _bearer(authorization: Optional[str]) -> str:
     return parts[1]
 
 
-async def _resolve_route(http: httpx.AsyncClient, token: str) -> RouteDict:
+async def _resolve_route(http: httpx.AsyncClient, token: str) -> dict[str, Any]:
     """
     Look up a session token against the backend.
 
-    Returns the route descriptor. A non-active session is rejected with
-    410 Gone so the client distinguishes "this was a valid session but
-    isn't anymore" from "this token never existed" (404).
+    Returns the route descriptor. A non-active session is rejected with 410 Gone
+    so the client distinguishes "this was a valid session but isn't anymore"
+    from "this token never existed" (404).
     """
     try:
         r = await http.get(f"{BACKEND_URL}/internal/sessions/{token}")
@@ -107,7 +118,7 @@ async def _resolve_route(http: httpx.AsyncClient, token: str) -> RouteDict:
             detail=f"backend returned {r.status_code} on route lookup",
         )
 
-    route: RouteDict = r.json()
+    route = r.json()
     if route.get("status") != "active":
         raise HTTPException(
             status_code=410,
@@ -125,11 +136,10 @@ async def _forward(
     content_type: Optional[str] = None,
 ) -> Response:
     """
-    Forward a request to ``url`` and mirror the response back to the
-    caller verbatim.
+    Forward a request to ``url`` and mirror the response back verbatim.
 
-    The proxy preserves the status code, the body bytes, and the
-    upstream content-type. It does not inspect or transform the payload.
+    Preserves the status code, body bytes, and upstream content-type. Used for
+    the session and action surfaces, which are token-based and carry no cookies.
     """
     headers: dict[str, str] = {}
     if content_type is not None and body is not None:
@@ -147,6 +157,51 @@ async def _forward(
     )
 
 
+async def _forward_human(request: Request, path: str) -> Response:
+    """
+    Forward a browser request to the frontend, cookie-aware.
+
+    Passes the ``Cookie`` header inward and relays ``Set-Cookie`` and
+    ``Location`` back out, without following redirects (the browser does that,
+    so the address bar tracks the real navigation). A fresh client is used per
+    call so no ``Set-Cookie`` from a login response is retained in a shared jar
+    and replayed onto another user's request.
+    """
+    headers: dict[str, str] = {}
+    content_type = request.headers.get("content-type")
+    if content_type:
+        headers["content-type"] = content_type
+    cookie = request.headers.get("cookie")
+    if cookie:
+        headers["cookie"] = cookie
+
+    body = await request.body()
+
+    async with httpx.AsyncClient(timeout=PROXY_TIMEOUT, follow_redirects=False) as client:
+        try:
+            r = await client.request(
+                request.method,
+                f"{FRONTEND_URL}{path}",
+                content=body,
+                headers=headers,
+                params=request.query_params,
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"frontend unreachable: {e}")
+
+    out = Response(
+        content=r.content,
+        status_code=r.status_code,
+        media_type=r.headers.get("content-type"),
+    )
+    for value in r.headers.get_list("set-cookie"):
+        out.headers.append("set-cookie", value)
+    location = r.headers.get("location")
+    if location:
+        out.headers["location"] = location
+    return out
+
+
 # -------------------- Session lifecycle --------------------
 
 
@@ -156,11 +211,9 @@ async def create_session(request: Request) -> Response:
     Create a new session.
 
     Forwarded verbatim to ``POST /internal/sessions`` on the backend. The
-    response contains the session token the client uses on subsequent
-    action requests.
-
-    This call blocks for the duration of the agent bootstrap on the OT
-    (typically 60-90 seconds). Clients should use a generous timeout.
+    response contains the session token the client uses on subsequent action
+    requests. Blocks for the duration of the agent bootstrap on the OT
+    (typically 60-90 seconds); clients should use a generous timeout.
     """
     body = await request.body()
     return await _forward(
@@ -177,9 +230,9 @@ async def end_session(token: str, request: Request) -> Response:
     """
     Tear down a session.
 
-    Maps to ``POST /internal/sessions/{token}/abort`` on the backend,
-    which marks the session aborting, signals the agent to terminate,
-    and releases the robot lock.
+    Maps to ``POST /internal/sessions/{token}/abort`` on the backend, which
+    marks the session aborting, signals the agent to terminate, and releases the
+    robot lock.
     """
     return await _forward(
         request.app.state.http,
@@ -245,5 +298,27 @@ async def get_job(
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    """Liveness probe for the proxy itself. Does not check the backend."""
+    """Liveness probe for the proxy itself. Does not check upstreams."""
     return {"status": "ok"}
+
+
+# -------------------- Human console (catch-all, registered last) --------------
+
+
+@app.api_route(
+    "/{full_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def human_console(full_path: str, request: Request) -> Response:
+    """
+    Forward browser traffic to the frontend, or refuse it.
+
+    Registered last so the explicit session/action/health routes match first.
+    Only allowlisted human paths are forwarded; everything else (notably the
+    backend's ``/internal/*``, ``/api/*``, ``/manual/*`` and ``/robots``) is
+    refused, keeping the control plane unreachable from outside.
+    """
+    path = "/" + full_path
+    if not _is_human_route(path):
+        raise HTTPException(status_code=404, detail="not found")
+    return await _forward_human(request, path)
