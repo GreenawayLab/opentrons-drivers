@@ -21,7 +21,7 @@
         <td>{{ r.ssh_user }}</td>
         <td>{{ r.agent_port }}</td>
         <td>
-          {% if r.key_name and r.key_name in secret_names %}set &#10003;
+          {% if r.has_key %}set &#10003;
           {% elif r.key_name %}<span class="error">missing</span>
           {% else %}<span class="muted">none</span>{% endif %}
         </td>
