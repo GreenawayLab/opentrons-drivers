@@ -2,17 +2,6 @@
 #: Statuses returned by GET /health that mean the agent is fully operational. Can be expanded.
 HEALTHY_STATUSES = ("ready",)
 
-#: Absolute path to agent_main.py on the Opentrons system.
-#:
-#: The path is firmware-version-dependent: the user-packages overlay layout
-#: is an Opentrons system convention, and the python3.12 segment changes
-#: with the system Python version. If the agent fails to launch with
-#: "no such file", check here first.
-AGENT_MAIN_PATH = (
-    "/var/user-packages/usr/lib/python3.12/site-packages"
-    "/opentrons_drivers/agent/agent_main.py"
-)
-
 #: Root directory on the OT where all protocol launches are organised.
 OT_WORKDIR = "/data/protocols"
 
@@ -39,3 +28,40 @@ DEFAULT_READINESS_TIMEOUT = 180.0
 # Config operational location
 
 DEFAULT_CONFIG_PATH = "/data/backend.json"
+
+
+# -------------------- Robot environment --------------------
+#
+# Where the drivers package lives on the OT is NOT hardcoded to a Python
+# version. The install location is whatever pip uses by default, discovered
+# at runtime via `pip show` (see bootstrap.start_agent). The only fixed part
+# is the relative path of agent_main.py inside the installed package.
+
+#: Distribution / import name of the on-robot drivers package.
+DRIVERS_PACKAGE = "opentrons_drivers"
+
+#: pip on the robot. Set to "python3 -m pip" if bare pip resolves to a
+#: different interpreter than the one opentrons_execute runs — the install
+#: target and the launch-time path discovery both derive from this, so the
+#: two stay consistent by construction.
+ROBOT_PIP = "pip"
+
+#: Path of the agent entry point relative to the installed package's
+#: location (i.e. relative to `pip show`'s reported Location).
+AGENT_MAIN_RELPATH = f"{DRIVERS_PACKAGE}/agent/agent_main.py"
+
+
+# -------------------- Driver update --------------------
+#
+# The backend is a pure executor: it does not persist wheels (the maintainer
+# owns the wheel store). The drivers wheel installs with plain pip from a
+# local file — opentrons (its only dependency) is already on the robot, so no
+# package index is needed.
+
+#: Scratch dir on the robot the wheel is uploaded to, installed from, and
+#: then removed from.
+WHEEL_STAGING_DIR = "/data/driver_updates"
+
+#: Upper bound on an accepted wheel upload. The drivers wheel is pure-python
+#: and tiny; this only guards against a runaway upload tying up memory.
+MAX_WHEEL_BYTES = 50 * 1024 * 1024

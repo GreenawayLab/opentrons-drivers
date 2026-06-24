@@ -224,30 +224,48 @@ class OTBootstrap:
         Launch the agent process detached, with cwd set to the launch
         directory.
 
-        Performs two pre-launch steps:
+        Steps, all in one remote shell command:
 
         - Stops ``opentrons-robot-server`` if it's running. The systemd
           service grabs exclusive hardware locks (GPIO, smoothie serial)
           on boot; ``opentrons_execute`` cannot acquire them while the
           server is alive. ``|| true`` swallows the failure when the
           service is already stopped.
-        - Exports :data:`AGENT_ENV` for the agent process. Most
-          importantly ``PYTHONUNBUFFERED=1`` so runlog output is visible
-          in ``agent.log`` in real time, not after process exit.
+        - Resolves ``agent_main.py`` at runtime as a
+          Python-version-specific site-packages path. ``pip show`` reports
+          where ``opentrons_drivers`` is installed (its ``Location``), and
+          the agent module sits at a fixed relative path beneath it
+          (:data:`AGENT_MAIN_RELPATH`). The discovery and a ``test -f``
+          guard run in the foreground; only the ``nohup`` launch is
+          backgrounded (via the brace group), so a missing or uninstalled
+          package fails as an SSHError here rather than as a silent
+          non-launch that only shows up as a readiness timeout.
+        - Exports :data:`AGENT_ENV` for the agent process. Most importantly
+          ``PYTHONUNBUFFERED=1`` so runlog output is visible in
+          ``agent.log`` in real time, not after process exit.
 
-        ``opentrons_execute`` is invoked with the absolute path to
-        ``agent_main.py``; it is not a ``python -m`` runner.
-
-        Assumes the OT has ``nohup``, ``opentrons_execute`` on PATH, and
-        ``opentrons_drivers`` installed at :data:`AGENT_MAIN_PATH`.
+        Assumes the OT has ``nohup``, ``opentrons_execute``, the pip given
+        by :data:`ROBOT_PIP`, and ``sed`` on PATH, and ``opentrons_drivers``
+        installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
 
+        # $(pip show ...) yields the install Location; append the fixed
+        # relative path to reach agent_main.py. Word-splitting does not apply
+        # to an assignment RHS, so a Location with spaces survives; we quote
+        # on every use below.
+        location = (
+            f"$({gv.ROBOT_PIP} show {gv.DRIVERS_PACKAGE} "
+            f"| sed -n 's/^Location: //p')"
+        )
+
         cmd = (
-            f"systemctl stop opentrons-robot-server || true && "
+            f"systemctl stop opentrons-robot-server || true; "
             f"cd {self.launch_dir} && "
-            f"nohup env {env_prefix} "
-            f"opentrons_execute {gv.AGENT_MAIN_PATH} "
-            f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null &"
+            f"AGENT_MAIN={location}/{gv.AGENT_MAIN_RELPATH} && "
+            f'test -f "$AGENT_MAIN" && '
+            f"{{ nohup env {env_prefix} "
+            f'opentrons_execute "$AGENT_MAIN" '
+            f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null & }}"
         )
         self.ssh.run(cmd)

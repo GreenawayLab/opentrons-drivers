@@ -36,17 +36,20 @@ from dataclasses import asdict
 from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from sqlalchemy.orm import Session
 
 from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.robot_sessions import (
     Robot,
-    Session,
+    Session as RobotSession,
     SessionRegistry,
 )
 from opentrons_control.backend.app.routers import auth, admin
 from opentrons_control.backend.app import update
+from opentrons_control.backend.app.db.db_session import get_db
+from opentrons_control.backend.app.vault import get_secret
 import opentrons_control.backend.app.settings.custom_types as ct
 import opentrons_control.backend.app.settings.global_variables as gv
 
@@ -110,7 +113,7 @@ class UpdateReport(BaseModel):
 # -------------------- Helpers --------------------
 
 
-def _session_to_details(session: Session) -> SessionDetailsResponse:
+def _session_to_details(session: RobotSession) -> SessionDetailsResponse:
     return SessionDetailsResponse(**asdict(session))
 
 
@@ -309,6 +312,24 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             )
 
         return UpdateReport(version=version, results=results)
+
+    @app.get("/internal/update/credential")
+    async def get_git_credential(db: Session = Depends(get_db)) -> Response:
+        """
+        Return the read-only git deploy key for the maintainer.
+
+        The key lives encrypted in the vault and is decrypted only in memory.
+        Reachable only on the internal network (the proxy refuses
+        ``/internal/*`` from outside), and consumed solely by the maintainer
+        to clone the drivers source.
+        """
+        try:
+            key = get_secret(db, gv.GIT_CREDENTIAL_SECRET)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail="git credential not configured"
+            )
+        return Response(content=key, media_type="application/octet-stream")
 
     # ------------------------------------------------------------------
     # Manual protocols (stub)
