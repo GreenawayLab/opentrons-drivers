@@ -35,10 +35,15 @@ services:
     networks:
       - internal
       - robot_net
-    volumes:
-      - ./data:/data:ro
     environment:
-      BACKEND_CONFIG: "/data/backend.json"
+      DATABASE_URL: "postgresql+psycopg://backend:${POSTGRES_PASSWORD}@db:5432/opentrons"
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      FERNET_KEY: ${FERNET_KEY:?set FERNET_KEY in .env}
+    tmpfs:
+      - /run/keys
+    depends_on:
+      db:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -46,6 +51,28 @@ services:
       - "80:80"
     depends_on:
       - proxy
+
+  db:
+    image: postgres:16
+    networks:
+      - internal
+    environment:
+      POSTGRES_DB: opentrons
+      POSTGRES_USER: backend
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backend -d opentrons"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
 
 networks:
   internal:

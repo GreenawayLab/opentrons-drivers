@@ -16,12 +16,13 @@ clients. Two endpoint groups:
     instruction document into a queue of actions lives outside this
     module.
 
-The module exposes no top-level FastAPI instance. Callers construct the
-app via :func:`create_app`, passing in a fully-resolved robot registry.
-This keeps configuration loading (and the secret handling that comes with
-it) out of the library proper.
+Auth and admin management are mounted from the routers package as a JSON API
+under ``/api``. Rendering lives in a separate frontend service that consumes
+that API. The module exposes no top-level FastAPI instance: callers construct
+the app via :func:`create_app`, passing in a fully-resolved robot registry.
+This keeps configuration loading out of the library proper.
 
-This module is excluded from strict no Any typing by mypy because it is 
+This module is excluded from strict no Any typing by mypy because it is
 somehow conflicting with the pydantic BaseModel.
 """
 
@@ -37,12 +38,13 @@ from fastapi import FastAPI, HTTPException
 
 from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
-from opentrons_control.backend.app.sessions import (
+from opentrons_control.backend.app.robot_sessions import (
     Robot,
     Session,
     SessionRegistry
 )
-import opentrons_control.backend.app.custom_types as ct
+from opentrons_control.backend.app.routers import auth, admin
+import opentrons_control.backend.app.settings.custom_types as ct
 
 
 logger = logging.getLogger(__name__)
@@ -152,6 +154,13 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     app = FastAPI(title="opentrons-control-backend", lifespan=lifespan)
 
     # ------------------------------------------------------------------
+    # JSON API: auth and admin management
+    # ------------------------------------------------------------------
+
+    app.include_router(auth.router)
+    app.include_router(admin.router)
+
+    # ------------------------------------------------------------------
     # Health and metadata
     # ------------------------------------------------------------------
 
@@ -184,7 +193,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
-                files=req.files,  
+                files=req.files,
                 client_id=req.client_id,
             )
         except ct.UnknownRobot:

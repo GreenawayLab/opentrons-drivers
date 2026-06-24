@@ -32,12 +32,12 @@ from typing import AsyncIterator, Mapping, Optional
 
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
 from opentrons_control.backend.app.ot_client import OTClient
-from opentrons_control.backend.app.sessions import (
+from opentrons_control.backend.app.robot_sessions import (
     Session,
     SessionRegistry,
 )
-import opentrons_control.backend.app.custom_types as ct
-from opentrons_control.backend.app.global_variables import DEFAULT_READINESS_TIMEOUT
+import opentrons_control.backend.app.settings.custom_types as ct
+from opentrons_control.backend.app.settings.global_variables import DEFAULT_READINESS_TIMEOUT
 
 # -------------------- File materialisation --------------------
 

@@ -11,8 +11,14 @@ RUN pip install --no-cache-dir \
         uvicorn \
         httpx \
         pydantic \
-        requests
-
+        pydantic-settings \
+        sqlalchemy \
+        "psycopg[binary]" \
+        cryptography \
+        pyjwt \
+        jinja2 \
+        python-multipart
+        
 # Mirror the import path inside the container
 RUN mkdir -p /app/opentrons_control/backend \
  && touch /app/opentrons_control/__init__.py \
