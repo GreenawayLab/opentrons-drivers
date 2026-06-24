@@ -5,17 +5,17 @@ Reads the secret value from a file or from stdin and stores it under a name,
 encrypted with the application key. Runs inside the backend container:
 
     # from stdin (pipe a key file from the host)
-    docker compose exec -T backend python -m app.scripts.store_secret ot3_ssh_key ssh_key < ./ot3_key
+    docker compose exec -T backend python -m opentrons_control.backend.app.scripts.store_secret ot3_ssh_key ssh_key < ./ot3_key
 
     # from a path inside the container
-    docker compose exec backend python -m app.scripts.store_secret ot3_ssh_key ssh_key --file /tmp/ot3_key
+    docker compose exec backend python -m opentrons_control.backend.app.scripts.store_secret ot3_ssh_key ssh_key --file /tmp/ot3_key
 """
 
 import argparse
 import sys
 
-from app.db.db_session import SessionLocal
-from app.vault import put_secret
+from opentrons_control.backend.app.db.db_session import SessionLocal
+from opentrons_control.backend.app.vault import put_secret
 
 
 def main() -> None:

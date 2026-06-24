@@ -115,10 +115,12 @@ async def _abort_session(
     are treated as success because the desired end state is "agent gone".
     """
     session = registry.mark_aborting(token, message="abort requested")
-    if session.agent_base_url is not None:
-        async with OTClient(session.agent_base_url) as client:
-            await client.abort()
-    registry.release(token)
+    try:
+        if session.agent_base_url is not None:
+            async with OTClient(session.agent_base_url) as client:
+                await client.abort()
+    finally:
+        registry.release(token)
 
 
 # -------------------- App factory --------------------

@@ -16,7 +16,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
 from opentrons_control.backend.app.settings.config import settings
-from app.db.runner import execute, fetch_one
+from opentrons_control.backend.app.db.runner import execute, fetch_one
 
 KEYS_DIR = Path("/run/keys")
 
