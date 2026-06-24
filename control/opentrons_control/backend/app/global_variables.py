@@ -1,3 +1,4 @@
+from pathlib import Path
 
 #: Statuses returned by GET /health that mean the agent is fully operational. Can be expanded.
 HEALTHY_STATUSES = ("ready",)
@@ -39,3 +40,26 @@ DEFAULT_READINESS_TIMEOUT = 180.0
 # Config operational location
 
 DEFAULT_CONFIG_PATH = "/data/backend.json"
+
+
+# -------------------- Driver update --------------------
+#
+# The backend is a pure executor: it does not persist wheels (the maintainer
+# owns the wheel store). The drivers wheel installs with plain pip from a
+# local file — opentrons (its only dependency) is already on the robot, so no
+# package index is needed.
+
+#: Distribution name of the on-robot drivers wheel (pip uninstall target).
+DRIVERS_PACKAGE = "opentrons_drivers"
+
+#: pip on the robot. Set to "python3 -m pip" if bare pip resolves to a
+#: different interpreter than the one opentrons_execute runs.
+ROBOT_PIP = "pip"
+
+#: Scratch dir on the robot the wheel is uploaded to, installed from, and
+#: then removed from.
+WHEEL_STAGING_DIR = "/data/driver_updates"
+
+#: Upper bound on an accepted wheel upload. The drivers wheel is pure-python
+#: and tiny; this only guards against a runaway upload tying up memory.
+MAX_WHEEL_BYTES = 50 * 1024 * 1024

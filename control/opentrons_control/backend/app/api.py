@@ -2,13 +2,15 @@
 Backend HTTP API.
 
 Exposes control-plane endpoints consumed by the proxy and by lab-internal
-clients. Two endpoint groups:
+clients. Three endpoint groups:
 
 ``/internal/...``
     Session lifecycle endpoints called by the proxy on behalf of external
-    clients. Cover session creation, routing lookup, abort, and a debug
-    view. These are not authenticated at this layer; access control lives
-    at the proxy edge.
+    clients, plus the driver-update executor called (via the maintainer) for
+    fleet installs. Cover session creation, routing lookup, abort, a debug
+    view, and wheel install. These are not authenticated at this layer;
+    access control lives at the proxy edge (which refuses ``/internal/*`` from
+    outside entirely).
 
 ``/manual/...``
     Endpoints triggered by internal lab tooling for backend-driven runs.
@@ -34,17 +36,19 @@ from dataclasses import asdict
 from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.robot_sessions import (
     Robot,
     Session,
-    SessionRegistry
+    SessionRegistry,
 )
 from opentrons_control.backend.app.routers import auth, admin
+from opentrons_control.backend.app import update
 import opentrons_control.backend.app.settings.custom_types as ct
+import opentrons_control.backend.app.settings.global_variables as gv
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +99,13 @@ class RobotInfoResponse(BaseModel):
     agent_port: int
 
 
+class UpdateReport(BaseModel):
+    """Per-robot outcome of an install run."""
+
+    version: str
+    results: Dict[str, str]
+
+
 
 # -------------------- Helpers --------------------
 
@@ -113,6 +124,8 @@ async def _abort_session(
     Marks the session as aborting, signals the agent to terminate, and
     releases the lock. Transport-level failures on the agent abort call
     are treated as success because the desired end state is "agent gone".
+    The release runs in a ``finally`` so an unexpected agent response never
+    leaves the session wedged in ``aborting`` with the robot lock held.
     """
     session = registry.mark_aborting(token, message="abort requested")
     try:
@@ -248,6 +261,54 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             raise HTTPException(status_code=404, detail="unknown session")
         await _abort_session(registry, token)
         return {"status": "aborted"}
+
+    # ------------------------------------------------------------------
+    # Internal: driver-update executor (maintainer-facing)
+    # ------------------------------------------------------------------
+
+    @app.post("/internal/update", response_model=UpdateReport)
+    async def execute_update(
+        version: str = Form(...),
+        robot_ids: str = Form(""),
+        wheel: UploadFile = File(...),
+    ) -> UpdateReport:
+        """
+        Execute a driver install: one wheel plus an instruction.
+
+        The backend holds no wheel store; the maintainer owns versioned wheels
+        and hands the backend a single wheel to install. ``robot_ids`` is a
+        comma-separated target list; empty means every currently-available
+        robot. The wheel is written to a temporary directory, installed, and
+        discarded.
+        """
+        data = await wheel.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="empty wheel upload")
+        if len(data) > gv.MAX_WHEEL_BYTES:
+            raise HTTPException(status_code=413, detail="wheel exceeds size limit")
+        if not wheel.filename:
+            raise HTTPException(status_code=400, detail="wheel upload must include a filename")
+
+        targets = [r.strip() for r in robot_ids.split(",") if r.strip()]
+        if not targets:
+            targets = registry.robot_ids()
+
+        try:
+            results = await update.execute_install(
+                registry,
+                data,
+                wheel.filename,
+                version,
+                robot_ids=targets,
+            )
+        except update.UpdateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ct.UnknownRobot as e:
+            raise HTTPException(
+                status_code=404, detail=f"unknown robot in target set: {e}"
+            )
+
+        return UpdateReport(version=version, results=results)
 
     # ------------------------------------------------------------------
     # Manual protocols (stub)
