@@ -108,6 +108,21 @@ class SSHClient:
         cmd = self._base_ssh_cmd() + [f"{self.user}@{self.host}", remote_cmd]
         self._run(cmd, timeout=timeout)
 
+    def run_output(
+        self,
+        remote_cmd: str,
+        *,
+        timeout: Optional[int] = None,
+    ) -> str:
+        """Run a remote shell command via SSH and return its stdout.
+
+        Like :meth:`run`, but returns the command's captured stdout
+        (stripped). Used by maintenance tooling that needs to read a value
+        back from the robot, e.g. the currently-installed driver version.
+        """
+        cmd = self._base_ssh_cmd() + [f"{self.user}@{self.host}", remote_cmd]
+        return self._run(cmd, timeout=timeout).stdout.strip()
+
     def upload(
         self,
         local: Path,

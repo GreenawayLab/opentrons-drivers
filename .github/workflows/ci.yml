@@ -18,7 +18,7 @@ jobs:
         python-version: ['3.13']
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -28,7 +28,9 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r dev-requirements.txt
-          pip install -e .
+          # Install both packages so imports (and mypy) resolve across the
+          # monorepo. The root pyproject is dev-tooling only and ships no code.
+          pip install -e ./drivers -e ./control
 
       - name: Run mypy
         run: mypy .
