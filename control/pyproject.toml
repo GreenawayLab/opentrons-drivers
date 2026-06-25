@@ -18,6 +18,12 @@ dependencies = [
     "pydantic",
 ]
 
+# Convenience launcher: `pip install -e .` then run `letsgo`. Editable install
+# is required — the command resolves the compose directory relative to its own
+# source location, which only points back at the repo under an editable install.
+[project.scripts]
+letsgo = "opentrons_control.scripts.launch:main"
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
