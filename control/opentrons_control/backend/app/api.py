@@ -313,23 +313,24 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
 
         return UpdateReport(version=version, results=results)
 
-    @app.get("/internal/update/credential")
-    async def get_git_credential(db: Session = Depends(get_db)) -> Response:
+    @app.get("/internal/update/token")
+    async def get_git_token(db: Session = Depends(get_db)) -> Response:
         """
-        Return the read-only git deploy key for the maintainer.
+        Return the git access token for the maintainer, if configured.
 
-        The key lives encrypted in the vault and is decrypted only in memory.
+        The token (a read-only PAT) lives encrypted in the vault and is
+        decrypted only in memory. A 404 means none is configured, which the
+        maintainer treats as "public repo" and fetches unauthenticated.
         Reachable only on the internal network (the proxy refuses
-        ``/internal/*`` from outside), and consumed solely by the maintainer
-        to clone the drivers source.
+        ``/internal/*`` from outside).
         """
         try:
-            key = get_secret(db, gv.GIT_CREDENTIAL_SECRET)
+            token = get_secret(db, gv.GIT_TOKEN_SECRET)
         except KeyError:
             raise HTTPException(
-                status_code=404, detail="git credential not configured"
+                status_code=404, detail="git token not configured"
             )
-        return Response(content=key, media_type="application/octet-stream")
+        return Response(content=token, media_type="text/plain")
 
     # ------------------------------------------------------------------
     # Manual protocols (stub)

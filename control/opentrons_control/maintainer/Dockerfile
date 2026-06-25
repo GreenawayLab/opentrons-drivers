@@ -2,13 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# git + openssh-client: pull the drivers source over an SSH deploy key.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends git openssh-client \
- && rm -rf /var/lib/apt/lists/*
-
-# build: produce the drivers wheel. fastapi/uvicorn/httpx/pydantic: the
-# service surface and the backend client.
+# The source is fetched as an HTTPS tarball and extracted with the
+# stdlib. build: produce the drivers wheel. fastapi/uvicorn/httpx/pydantic: the
+# service surface, the archive download, and the backend client.
 RUN pip install --no-cache-dir fastapi uvicorn httpx pydantic build
 
 # Mirror the import path inside the container, the same way the backend does,

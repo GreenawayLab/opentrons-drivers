@@ -1,24 +1,20 @@
 version: "3.9"
 
-# Four services across two networks:
+# Five services across two networks:
 #
-# - proxy: the only externally-reachable service. Forwards session
-#   lifecycle/action calls to the backend/agents, and browser traffic to
-#   the frontend.
+# - proxy: the only externally-reachable service. Forwards session/action
+#   calls to the backend/agents, and browser traffic to the frontend.
 # - backend: control plane and driver-update executor. Reachable only by the
-#   proxy and the frontend via the "internal" network. Has SSH access to
-#   robots via the "robot_net" network. Holds no driver wheels itself — it
-#   installs from a tmpdir and forgets.
-# - frontend: HTML renderer. Calls the backend JSON API. Internal-only;
-#   reached by the browser exclusively through the proxy.
+#   proxy, frontend, and maintainer via "internal". SSH to robots via
+#   "robot_net". Holds no driver wheels — installs from a tmpdir and forgets.
+# - frontend: HTML renderer. Internal-only; reached by the browser through
+#   the proxy. Calls the backend and the maintainer.
+# - maintainer: owns the versioned wheel store, builds the drivers wheel from
+#   a git checkout, and hands wheels + instructions to the backend. Internal
+#   only (needs internet egress for git/PyPI, never touches robot_net).
 # - db: postgres. Internal-only.
 #
-# The "robot_net" network is the bridge to the isolated robot subnet.
-# In production this is replaced with a host-level bridge or a VLAN
-# interface; for local development a plain bridge is sufficient.
-#
-# NOTE: the maintainer service (which owns the versioned wheel store and the
-# git build) lands in a later batch; it will join "internal" only.
+# "robot_net" bridges to the isolated robot subnet.
 
 services:
   proxy:
@@ -59,6 +55,20 @@ services:
     depends_on:
       - backend
 
+  maintainer:
+    build: ./maintainer
+    networks:
+      - internal
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      GITHUB_REPO: ${GITHUB_REPO:?set GITHUB_REPO in .env}
+      GIT_REF: ${DRIVERS_GIT_REF:-main}
+      DRIVERS_SUBDIR: ${DRIVERS_SUBDIR:-opentrons_drivers}
+    volumes:
+      - maint_data:/data
+    depends_on:
+      - backend
+
   db:
     image: postgres:16
     networks:
@@ -79,6 +89,7 @@ services:
 
 volumes:
   pgdata:
+  maint_data:
 
 networks:
   internal:

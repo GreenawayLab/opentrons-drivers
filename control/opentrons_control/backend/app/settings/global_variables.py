@@ -1,4 +1,3 @@
-
 #: Statuses returned by GET /health that mean the agent is fully operational. Can be expanded.
 HEALTHY_STATUSES = ("ready",)
 
@@ -65,3 +64,9 @@ WHEEL_STAGING_DIR = "/data/driver_updates"
 #: Upper bound on an accepted wheel upload. The drivers wheel is pure-python
 #: and tiny; this only guards against a runaway upload tying up memory.
 MAX_WHEEL_BYTES = 50 * 1024 * 1024
+
+#: Vault secret name for the git access token (a read-only PAT) the maintainer
+#: uses to fetch the repo archive. Optional: if unset, public repos still work
+#: and the maintainer fetches unauthenticated. Store it with:
+#:   store_secret git_token git_token --file ./token
+GIT_TOKEN_SECRET = "git_token"

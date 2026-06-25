@@ -1,10 +1,9 @@
 """
 HTTP client for the backend.
 
-The maintainer is a pure HTTP client of the backend: it asks for git
-credentials and it hands over a built wheel plus an instruction (version +
-target robots) for execution. It never imports backend code and never touches
-a robot.
+The maintainer is a pure HTTP client of the backend: it asks for the (optional)
+git token and it hands over a built wheel plus an instruction (version + target
+robots) for execution. It never imports backend code and never touches a robot.
 """
 
 from __future__ import annotations
@@ -16,26 +15,32 @@ import httpx
 
 from opentrons_control.maintainer.app.config import BACKEND_URL
 from opentrons_control.maintainer.app.config import BACKEND_TIMEOUT
-from opentrons_control.maintainer.app.config import GIT_CREDENTIAL_PATH
+from opentrons_control.maintainer.app.config import TOKEN_PATH
 from opentrons_control.maintainer.app.config import INSTALL_PATH
 
 
 class BackendError(RuntimeError):
-    """Raised when a backend call fails or returns a non-200 status."""
+    """Raised when a backend call fails or returns an unexpected status."""
 
 
-async def fetch_git_credential() -> bytes:
-    """Fetch the git deploy key from the backend vault. Returns raw bytes."""
+async def fetch_git_token() -> str | None:
+    """Fetch the git access token from the backend vault.
+
+    :returns: The token string, or None if the backend reports none configured
+        (404) — in which case the source is fetched unauthenticated (public repo).
+    :raises BackendError: on transport failure or an unexpected status.
+    """
     try:
         async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
-            r = await client.get(f"{BACKEND_URL}{GIT_CREDENTIAL_PATH}")
+            r = await client.get(f"{BACKEND_URL}{TOKEN_PATH}")
     except httpx.HTTPError as e:
         raise BackendError(f"backend unreachable: {e}") from e
+    if r.status_code == 404:
+        return None
     if r.status_code != 200:
-        raise BackendError(
-            f"credential fetch returned {r.status_code}: {r.text}"
-        )
-    return r.content
+        raise BackendError(f"token fetch returned {r.status_code}: {r.text}")
+    token = r.text.strip()
+    return token or None
 
 
 async def send_install(

@@ -1,17 +1,17 @@
 """
 Maintainer configuration.
 
-A thin service, configured like the proxy/frontend via environment variables
-rather than a settings file. The maintainer owns the wheel store and the
-build, talks to the backend over HTTP for credentials and installs, and never
-touches a robot directly.
+A thin service, configured like the proxy/frontend via environment variables.
+The maintainer owns the wheel store and the build, fetches the drivers source
+as a tarball over HTTPS, talks to the backend for the (optional) git token and
+for install execution, and never touches a robot directly.
 """
 
 from __future__ import annotations
 
 import os
 
-#: Backend base URL (credential fetch + install execution).
+#: Backend base URL (token fetch + install execution).
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/")
 
 #: Outbound timeout for backend calls. Generous: a fleet install blocks until
@@ -21,22 +21,18 @@ BACKEND_TIMEOUT = float(os.environ.get("BACKEND_TIMEOUT", "600"))
 #: Persistent store for built wheels, laid out as <WHEELS_DIR>/<version>/.
 WHEELS_DIR = os.environ.get("WHEELS_DIR", "/data/wheels")
 
-#: Working directory the drivers source is cloned into (wiped per build).
-SOURCE_DIR = os.environ.get("SOURCE_DIR", "/data/src")
+#: GitHub repository to build from, as "owner/name".
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 
-#: Subdirectory within the cloned repo that holds the drivers pyproject.toml.
-DRIVERS_SUBDIR = os.environ.get("DRIVERS_SUBDIR", "opentrons_drivers")
+#: GitHub API base. Override only for a GitHub Enterprise / mirror host.
+GITHUB_API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com").rstrip("/")
 
-#: Git remote for the monorepo, in SSH form for deploy-key auth, e.g.
-#: git@github.com:org/opentrons-lab.git
-REPO_URL = os.environ.get("REPO_URL", "")
-
-#: Branch or tag to build from.
+#: Branch, tag, or commit SHA to build from.
 GIT_REF = os.environ.get("GIT_REF", "main")
 
-#: tmpfs directory the git deploy key is written to during a clone.
-KEYS_DIR = os.environ.get("KEYS_DIR", "/run/keys")
+#: Repo-root subdirectory holding the drivers pyproject.toml.
+DRIVERS_SUBDIR = os.environ.get("DRIVERS_SUBDIR", "opentrons_drivers")
 
 #: Backend endpoints the maintainer calls.
-GIT_CREDENTIAL_PATH = "/internal/update/credential"
+TOKEN_PATH = "/internal/update/token"
 INSTALL_PATH = "/internal/update"
