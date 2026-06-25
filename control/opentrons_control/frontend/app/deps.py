@@ -1,3 +1,5 @@
+"""Shared Jinja2 templates instance for the frontend."""
+
 from datetime import datetime
 from pathlib import Path
 

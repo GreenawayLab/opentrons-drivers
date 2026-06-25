@@ -52,8 +52,12 @@ services:
     build: ./frontend
     networks:
       - internal
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      MAINTAINER_URL: "http://maintainer:8000"
     depends_on:
       - backend
+      - maintainer
 
   maintainer:
     build: ./maintainer

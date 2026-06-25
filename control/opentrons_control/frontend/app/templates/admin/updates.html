@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Driver updates{% endblock %}
+{% block body %}
+  <div class="bar">
+    <h1>Driver updates</h1>
+    <div class="nav">
+      <a href="/admin/dashboard">Robots</a>
+      <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+    </div>
+  </div>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if build_result %}<p class="ok">Built version {{ build_result }} and stored it.</p>{% endif %}
+  {% if maintainer_down %}<p class="note">Maintainer service is unreachable — the version list may be incomplete.</p>{% endif %}
+
+  <h2>Source credentials</h2>
+  <p>Git token: {% if token_set %}<span class="ok">set</span>{% else %}<span class="muted">not set</span> — required for a private repo{% endif %}</p>
+  <form method="post" action="/admin/git-token">
+    <label>Set / replace git token <span class="muted">(write-only; never shown back)</span>
+      <input name="token" type="password" placeholder="github_pat_..." required>
+    </label>
+    <button type="submit">Save token</button>
+  </form>
+
+  <h2>Build</h2>
+  <p class="muted">Fetches the latest drivers source and builds a wheel into the store. This can take up to a minute.</p>
+  <form method="post" action="/admin/updates/build">
+    <button type="submit">Build latest</button>
+  </form>
+
+  <h2>Stored versions</h2>
+  {% if versions %}
+    <ul>{% for v in versions %}<li>{{ v }}</li>{% endfor %}</ul>
+  {% else %}
+    <p class="muted">No versions built yet.</p>
+  {% endif %}
+
+  <h2>Deploy to robots</h2>
+  {% if versions and robots %}
+  <form method="post" action="/admin/updates/deploy">
+    <label>Version
+      <select name="version" required>
+        {% for v in versions %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </label>
+    <fieldset>
+      <legend>Target robots <span class="muted">(none selected = all available)</span></legend>
+      {% for r in robots %}
+        <label class="check"><input type="checkbox" name="robot_ids" value="{{ r.robot_id }}"> {{ r.robot_id }} <span class="muted">({{ r.host }})</span></label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit">Deploy</button>
+  </form>
+  {% else %}
+    <p class="muted">Need at least one built version and one robot to deploy.</p>
+  {% endif %}
+
+  {% if deploy_report is not none %}
+    <h3>Deploy result — {{ deploy_version }}</h3>
+    <table>
+      <thead><tr><th>Robot</th><th>Result</th></tr></thead>
+      <tbody>
+      {% for rid, result in deploy_report.items() %}
+        <tr>
+          <td>{{ rid }}</td>
+          <td>
+            {% if result.startswith('installed') %}<span class="ok">{{ result }}</span>
+            {% elif result.startswith('failed') %}<span class="fail">{{ result }}</span>
+            {% else %}{{ result }}{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="2" class="muted">No robots targeted.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

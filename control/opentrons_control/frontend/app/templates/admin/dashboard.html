@@ -3,7 +3,10 @@
 {% block body %}
   <div class="bar">
     <h1>Robots</h1>
-    <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+    <div class="nav">
+      <a href="/admin/updates">Driver updates</a>
+      <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+    </div>
   </div>
 
   <p class="note">Saved changes update the database. The running registry is built at
