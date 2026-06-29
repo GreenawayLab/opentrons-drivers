@@ -25,6 +25,30 @@ metadata = {
     "apiLevel": "2.24",
 }
 
+FLEX_API_LEVEL = None
+
+def metadata_gen() -> dict:
+    """Generates metadata for this protocol based on whether this is on the FLEX or OT2."""
+    with open(Path("postbox", "base_config.json")) as bc_file:
+        base_config = json.load(bc_file)
+    if base_config.get("robot_type") == "OT-2":
+        metadata = {
+            "protocolName": "ot_agent",
+            "author": "Aleksandr Ostudin",
+            "description": "Activate OT based on HTTP requests",
+            "apiLevel": f"{base_config.get('api_level')}",
+        }
+    else:
+        metadata = {
+            "protocolName": "ot_agent",
+            "author": "Aleksandr Ostudin",
+            "description": "Activate OT based on HTTP requests",
+        }
+        FLEX_API_LEVEL = base_config.get("api_level")
+
+    return metadata
+
+metadata = metadata_gen()
 
 def _write_crash(exc: BaseException) -> None:
     """Best-effort write of a crash record to status.json."""
