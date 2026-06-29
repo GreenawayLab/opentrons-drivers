@@ -18,7 +18,7 @@ from pathlib import Path
 import json
 import traceback
 
-FLEX_API_LEVEL = None
+requirements = None
 
 def metadata_gen() -> dict:
     """Generates metadata for this protocol based on whether this is on the FLEX or OT2."""
@@ -37,8 +37,7 @@ def metadata_gen() -> dict:
             "author": "Aleksandr Ostudin",
             "description": "Activate OT based on HTTP requests",
         }
-        FLEX_API_LEVEL = base_config.get("api_level")
-
+        requirements = {"robotType" : "Flex", "apiLevel" : f"{base_config.get('api_level')}"}
     return metadata
 
 metadata = metadata_gen()
