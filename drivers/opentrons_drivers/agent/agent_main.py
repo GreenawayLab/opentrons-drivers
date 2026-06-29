@@ -18,13 +18,6 @@ from pathlib import Path
 import json
 import traceback
 
-metadata = {
-    "protocolName": "ot_agent",
-    "author": "Aleksandr Ostudin",
-    "description": "Activate OT based on HTTP requests",
-    "apiLevel": "2.24",
-}
-
 FLEX_API_LEVEL = None
 
 def metadata_gen() -> dict:
