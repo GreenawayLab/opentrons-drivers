@@ -3,11 +3,11 @@ name = "opentrons_drivers"
 # Single source of truth for the version that runs ON the robots.
 # Bump this, then run `ot-update-robots` on the control machine to roll
 # the new version out to every attached Opentrons. See ../control/opentrons_control/maintain/README.md.
-version = "0.1.0"
+version = "0.1.1"
 description = "Agents and protocols that run on Opentrons hardware"
 authors = [
-    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
     {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
+    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
 ]
 requires-python = ">=3.10"
 # `opentrons` is the on-robot hardware API. It is preinstalled in the
