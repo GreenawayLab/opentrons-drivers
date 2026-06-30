@@ -14,9 +14,20 @@ LAUNCH_SUBDIRS = ("postbox", "plates", "logs")
 #: flush every line — without it, runlog output gets stuck in Python's
 #: block buffer and only appears in agent.log on process exit, defeating
 #: live diagnostics.
+#:
+#: PYTHONUTF8 / LC_ALL pin the whole agent process to UTF-8. The robot's
+#: inherited locale is not guaranteed UTF-8, so without this a plate file
+#: containing "µL" decodes wrong (or raises UnicodeDecodeError) the moment
+#: the agent reads it — and it manifests per-robot, depending on each
+#: robot's locale. Pinning here fixes every file read in the process at
+#: once, rather than per-open(); that is why a single-site encoding= fix
+#: tends to leak back. PYTHONUTF8=1 forces Python's UTF-8 mode (all open(),
+#: json, filesystem ops); LC_ALL covers any non-Python child in the tree.
 AGENT_ENV = {
     "RUNNING_ON_PI": "1",
     "PYTHONUNBUFFERED": "1",
+    "PYTHONUTF8": "1",
+    "LC_ALL": "C.UTF-8",
 }
 
 #: Wall-clock budget for the agent to report ready after launch. Hardware

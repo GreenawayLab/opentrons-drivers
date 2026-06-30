@@ -27,7 +27,8 @@ from pydantic import BaseModel
 
 from opentrons_control.maintainer.app.backend_client import BackendError
 from opentrons_control.maintainer.app.backend_client import fetch_git_token
-from opentrons_control.maintainer.app.backend_client import send_install
+from opentrons_control.maintainer.app.backend_client import get_install_status
+from opentrons_control.maintainer.app.backend_client import start_install
 from opentrons_control.maintainer.app.builder import WheelBuildError
 from opentrons_control.maintainer.app.builder import build_drivers_wheel
 from opentrons_control.maintainer.app.source import SourceError
@@ -50,7 +51,13 @@ class DeployRequest(BaseModel):
 
 
 class DeployResponse(BaseModel):
+    job_id: str
+
+
+class DeployStatusResponse(BaseModel):
+    job_id: str
     version: str
+    state: str
     results: dict[str, str]
 
 
@@ -101,9 +108,11 @@ async def build() -> BuildResponse:
 
 @app.post("/deploy", response_model=DeployResponse)
 async def deploy(req: DeployRequest) -> DeployResponse:
-    """Send a stored wheel + instruction to the backend executor.
+    """Hand a stored wheel + instruction to the backend; returns a job id.
 
-    ``robot_ids`` empty means "all available robots" (resolved on the backend).
+    The backend runs the install in the background and reports progress; this
+    returns immediately. ``robot_ids`` empty means "all available robots"
+    (resolved on the backend). Poll ``/deploy/status/{job_id}`` for progress.
     """
     wheel = wheel_for(req.version)
     if wheel is None:
@@ -111,8 +120,22 @@ async def deploy(req: DeployRequest) -> DeployResponse:
             status_code=404, detail=f"no stored wheel for version {req.version!r}"
         )
     try:
-        report = await send_install(wheel, req.version, req.robot_ids)
+        started = await start_install(wheel, req.version, req.robot_ids)
     except BackendError as e:
-        raise HTTPException(status_code=502, detail=f"backend install failed: {e}")
+        raise HTTPException(status_code=502, detail=f"backend deploy failed: {e}")
 
-    return DeployResponse(version=req.version, results=report.get("results", {}))
+    return DeployResponse(job_id=started["job_id"])
+
+
+@app.get("/deploy/status/{job_id}", response_model=DeployStatusResponse)
+async def deploy_status(job_id: str) -> DeployStatusResponse:
+    """Passthrough to the backend's deploy-job status.
+
+    Stateless: the maintainer keeps no job state; it forwards the backend's
+    per-robot progress so the frontend has a single place to poll.
+    """
+    try:
+        status = await get_install_status(job_id)
+    except BackendError as e:
+        raise HTTPException(status_code=502, detail=f"status fetch failed: {e}")
+    return DeployStatusResponse(**status)

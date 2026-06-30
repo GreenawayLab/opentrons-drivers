@@ -102,10 +102,18 @@ class RobotInfoResponse(BaseModel):
     agent_port: int
 
 
-class UpdateReport(BaseModel):
-    """Per-robot outcome of an install run."""
+class DeployStarted(BaseModel):
+    """Returned immediately when a deploy job is accepted."""
 
+    job_id: str
+
+
+class DeployStatus(BaseModel):
+    """Snapshot of a deploy job, polled until ``state`` is ``"done"``."""
+
+    job_id: str
     version: str
+    state: str
     results: Dict[str, str]
 
 
@@ -269,20 +277,22 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     # Internal: driver-update executor (maintainer-facing)
     # ------------------------------------------------------------------
 
-    @app.post("/internal/update", response_model=UpdateReport)
+    @app.post("/internal/update", response_model=DeployStarted)
     async def execute_update(
         version: str = Form(...),
         robot_ids: str = Form(""),
         wheel: UploadFile = File(...),
-    ) -> UpdateReport:
+    ) -> DeployStarted:
         """
-        Execute a driver install: one wheel plus an instruction.
+        Accept a driver install and run it in the background.
 
         The backend holds no wheel store; the maintainer owns versioned wheels
         and hands the backend a single wheel to install. ``robot_ids`` is a
         comma-separated target list; empty means every currently-available
-        robot. The wheel is written to a temporary directory, installed, and
-        discarded.
+        robot. The wheel upload is read in full and the target set validated
+        here (so a bad robot id fails fast), then the install runs as a
+        background job and this returns a ``job_id`` immediately. Poll
+        ``/internal/update/status/{job_id}`` for per-robot progress.
         """
         data = await wheel.read()
         if not data:
@@ -292,26 +302,35 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
         if not wheel.filename:
             raise HTTPException(status_code=400, detail="wheel upload must include a filename")
 
-        targets = [r.strip() for r in robot_ids.split(",") if r.strip()]
-        if not targets:
-            targets = registry.robot_ids()
-
+        ids = [r.strip() for r in robot_ids.split(",") if r.strip()]
         try:
-            results = await update.execute_install(
-                registry,
-                data,
-                wheel.filename,
-                version,
-                robot_ids=targets,
-            )
-        except update.UpdateError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            targets = update.resolve_targets(registry, ids)
         except ct.UnknownRobot as e:
             raise HTTPException(
                 status_code=404, detail=f"unknown robot in target set: {e}"
             )
 
-        return UpdateReport(version=version, results=results)
+        try:
+            job_id = update.start_install_job(
+                registry, data, wheel.filename, version, targets
+            )
+        except update.UpdateError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        return DeployStarted(job_id=job_id)
+
+    @app.get("/internal/update/status/{job_id}", response_model=DeployStatus)
+    async def update_status(job_id: str) -> DeployStatus:
+        """Return a deploy job's per-robot progress, or 404 if unknown.
+
+        A 404 means the job id isn't known — either never existed or lost to a
+        backend restart (the job store is in-memory and transitional). The
+        caller should treat that as "redeploy", never as success.
+        """
+        job = update.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="unknown job")
+        return DeployStatus(**update.job_status(job))
 
     @app.get("/internal/update/token")
     async def get_git_token(db: Session = Depends(get_db)) -> Response:

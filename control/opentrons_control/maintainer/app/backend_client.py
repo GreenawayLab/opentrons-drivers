@@ -43,18 +43,22 @@ async def fetch_git_token() -> str | None:
     return token or None
 
 
-async def send_install(
+async def start_install(
     wheel: Path,
     version: str,
     robot_ids: list[str],
 ) -> dict[str, Any]:
-    """Send the wheel + instruction to the backend executor and return its report.
+    """Hand the wheel + instruction to the backend; it starts a background job.
+
+    Returns immediately with the backend's ``{"job_id": ...}`` — the install
+    itself runs in the background on the backend and is polled via
+    :func:`get_install_status`.
 
     :param wheel: Local path to the wheel to install.
     :param version: Version label for the instruction.
     :param robot_ids: Target robots; empty list means "all available" on the
         backend side.
-    :returns: The backend's parsed JSON report (``{"version", "results"}``).
+    :returns: ``{"job_id": ...}``.
     :raises BackendError: on transport failure or a non-200 status.
     """
     data = {"version": version, "robot_ids": ",".join(robot_ids)}
@@ -65,5 +69,22 @@ async def send_install(
     except httpx.HTTPError as e:
         raise BackendError(f"backend unreachable: {e}") from e
     if r.status_code != 200:
-        raise BackendError(f"install returned {r.status_code}: {r.text}")
+        raise BackendError(f"deploy start returned {r.status_code}: {r.text}")
+    return r.json()
+
+
+async def get_install_status(job_id: str) -> dict[str, Any]:
+    """Fetch a deploy job's status from the backend.
+
+    :returns: The backend's status JSON (``{"job_id","version","state","results"}``).
+    :raises BackendError: on transport failure or a non-200 status (404 included,
+        so the caller can surface "unknown job" distinctly).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+            r = await client.get(f"{BACKEND_URL}{INSTALL_PATH}/status/{job_id}")
+    except httpx.HTTPError as e:
+        raise BackendError(f"backend unreachable: {e}") from e
+    if r.status_code != 200:
+        raise BackendError(f"status returned {r.status_code}: {r.text}")
     return r.json()

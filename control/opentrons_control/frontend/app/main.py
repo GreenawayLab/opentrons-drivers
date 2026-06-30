@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from opentrons_control.frontend.app.deps import templates
 
@@ -225,6 +225,7 @@ async def save_robot(
     )
     if resp.status_code in (401, 403):
         return RedirectResponse(url="/login", status_code=303)
+    await call_backend(request, "POST", "/api/robots/reload")
     return RedirectResponse(url="/admin/dashboard", status_code=303)
 
 
@@ -233,6 +234,7 @@ async def delete_robot(request: Request, robot_id: str) -> Response:
     resp = await call_backend(request, "DELETE", f"/api/robots/{robot_id}")
     if resp.status_code in (401, 403):
         return RedirectResponse(url="/login", status_code=303)
+    await call_backend(request, "POST", "/api/robots/reload")
     return RedirectResponse(url="/admin/dashboard", status_code=303)
 
 
@@ -246,7 +248,7 @@ async def _render_updates(
     user: dict[str, Any],
     *,
     build_result: Optional[str] = None,
-    deploy_report: Optional[dict[str, str]] = None,
+    deploy_job_id: Optional[str] = None,
     deploy_version: Optional[str] = None,
     error: Optional[str] = None,
 ) -> Response:
@@ -275,7 +277,7 @@ async def _render_updates(
             "token_set": token_set,
             "maintainer_down": maintainer_down,
             "build_result": build_result,
-            "deploy_report": deploy_report,
+            "deploy_job_id": deploy_job_id,
             "deploy_version": deploy_version,
             "error": error,
         },
@@ -329,13 +331,31 @@ async def updates_deploy(
         return await _render_updates(
             request, user, error=f"Deploy failed ({resp.status_code}): {resp.text}"
         )
-    body = resp.json()
     return await _render_updates(
         request,
         user,
-        deploy_report=body.get("results", {}),
-        deploy_version=body.get("version", version),
+        deploy_job_id=resp.json().get("job_id"),
+        deploy_version=version,
     )
+
+
+@app.get("/admin/updates/status/{job_id}")
+async def updates_status(request: Request, job_id: str) -> Response:
+    """JSON proxy the deploy panel polls for per-robot progress.
+
+    Admin-gated like the rest of the page; forwards the maintainer's status
+    (which forwards the backend's). Returns the status JSON as-is so the
+    client-side poller can render per-robot rows until ``state == "done"``.
+    """
+    user, redirect = await _admin_or_redirect(request)
+    if redirect:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        resp = await call_maintainer("GET", f"/deploy/status/{job_id}")
+    except httpx.RequestError as e:
+        return JSONResponse({"error": f"maintainer unreachable: {e}"}, status_code=502)
+    return JSONResponse(resp.json(), status_code=resp.status_code)
 
 
 @app.post("/admin/git-token")
