@@ -1,0 +1,25 @@
+[project]
+name = "opentrons_drivers"
+# Single source of truth for the version that runs ON the robots.
+# Bump this, then run `ot-update-robots` on the control machine to roll
+# the new version out to every attached Opentrons. See ../control/opentrons_control/maintain/README.md.
+version = "0.1.1"
+description = "Agents and protocols that run on Opentrons hardware"
+authors = [
+    {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
+    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
+]
+requires-python = ">=3.10"
+# `opentrons` is the on-robot hardware API. It is preinstalled in the
+# Opentrons system image, so on the robot the wheel is installed with
+# --no-deps and this is never resolved over the network. It is declared
+# here so a normal `pip install` in a dev environment pulls it in.
+dependencies = ["opentrons"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# Package only the library itself; tests are not shipped in the wheel.
+include = ["opentrons_drivers*"]

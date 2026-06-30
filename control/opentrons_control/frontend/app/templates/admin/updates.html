@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Driver updates{% endblock %}
+{% block body %}
+  <div class="bar">
+    <h1>Driver updates</h1>
+    <div class="nav">
+      <a href="/admin/dashboard">Robots</a>
+      <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+    </div>
+  </div>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if build_result %}<p class="ok">Built version {{ build_result }} and stored it.</p>{% endif %}
+  {% if maintainer_down %}<p class="note">Maintainer service is unreachable — the version list may be incomplete.</p>{% endif %}
+
+  <h2>Source credentials</h2>
+  <p>Git token: {% if token_set %}<span class="ok">set</span>{% else %}<span class="muted">not set</span> — required for a private repo{% endif %}</p>
+  <form method="post" action="/admin/git-token">
+    <label>Set / replace git token <span class="muted">(write-only; never shown back)</span>
+      <input name="token" type="password" placeholder="github_pat_..." required>
+    </label>
+    <button type="submit">Save token</button>
+  </form>
+
+  <h2>Build</h2>
+  <p class="muted">Fetches the latest drivers source and builds a wheel into the store. This can take up to a minute.</p>
+  <form method="post" action="/admin/updates/build">
+    <button type="submit">Build latest</button>
+  </form>
+
+  <h2>Stored versions</h2>
+  {% if versions %}
+    <ul>{% for v in versions %}<li>{{ v }}</li>{% endfor %}</ul>
+  {% else %}
+    <p class="muted">No versions built yet.</p>
+  {% endif %}
+
+  <h2>Deploy to robots</h2>
+  {% if versions and robots %}
+  <form method="post" action="/admin/updates/deploy">
+    <label>Version
+      <select name="version" required>
+        {% for v in versions %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+      </select>
+    </label>
+    <fieldset>
+      <legend>Target robots <span class="muted">(none selected = all available)</span></legend>
+      {% for r in robots %}
+        <label class="check"><input type="checkbox" name="robot_ids" value="{{ r.robot_id }}"> {{ r.robot_id }} <span class="muted">({{ r.host }})</span></label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit">Deploy</button>
+  </form>
+  {% else %}
+    <p class="muted">Need at least one built version and one robot to deploy.</p>
+  {% endif %}
+
+  {% if deploy_job_id %}
+    <style>
+      .deploy-grid { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0; }
+      .tile { flex: 1 1 180px; min-width: 180px; border-radius: 6px;
+              padding: 0.8rem 1rem; border: 1px solid; }
+      .tile-id { font-weight: 600; font-size: 1.05rem; }
+      .tile-status { margin-top: 0.3rem; font-size: 0.85rem; word-break: break-word; }
+      .tile.run  { background: #fff4e0; border-color: #f0b860; color: #8a5a00; }
+      .tile.ok   { background: #e6f4ea; border-color: #34a853; color: #1a7f37; }
+      .tile.fail { background: #fde8e8; border-color: #d93025; color: #b00000; }
+      .tile.skip { background: #f1f1f1; border-color: #cccccc; color: #777777; }
+      @keyframes deploy-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+      .tile.run { animation: deploy-pulse 1.2s ease-in-out infinite; }
+    </style>
+
+    <h3>Deploying {{ deploy_version }}</h3>
+    <div id="deploy-grid" class="deploy-grid" data-job="{{ deploy_job_id }}">
+      <p class="muted">starting…</p>
+    </div>
+    <p id="deploy-state" class="muted">in progress — robots finish independently; leaving this page won't interrupt the install.</p>
+
+    <script>
+      (function () {
+        var grid = document.getElementById("deploy-grid");
+        var stateLine = document.getElementById("deploy-state");
+        var jobId = grid.getAttribute("data-job");
+
+        function stateClass(result) {
+          if (result.indexOf("installed") === 0) return "ok";    // SSH returned clean
+          if (result.indexOf("failed") === 0) return "fail";     // SSH returned an error
+          if (result.indexOf("skipped") === 0) return "skip";    // not attempted (busy)
+          return "run";                                          // still installing
+        }
+
+        function label(result) {
+          return result === "running" ? "installing…" : result;
+        }
+
+        function render(results) {
+          var ids = Object.keys(results).sort();
+          if (ids.length === 0) {
+            grid.innerHTML = '<p class="muted">no robots targeted.</p>';
+            return;
+          }
+          grid.innerHTML = ids.map(function (id) {
+            var r = results[id];
+            return '<div class="tile ' + stateClass(r) + '">' +
+                     '<div class="tile-id">' + id + '</div>' +
+                     '<div class="tile-status">' + label(r) + '</div>' +
+                   '</div>';
+          }).join("");
+        }
+
+        function poll() {
+          fetch("/admin/updates/status/" + jobId, { headers: { "Accept": "application/json" } })
+            .then(function (resp) { return resp.ok ? resp.json() : null; })
+            .then(function (data) {
+              if (!data || !data.results) { return; }
+              render(data.results);
+              if (data.state === "done") {
+                clearInterval(timer);
+                stateLine.textContent = "all robots finished.";
+                stateLine.className = "muted";
+              }
+            })
+            .catch(function () { /* transient; next tick retries */ });
+        }
+
+        var timer = setInterval(poll, 2000);
+        poll();
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

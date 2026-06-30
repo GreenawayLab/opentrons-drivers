@@ -1,0 +1,102 @@
+version: "3.9"
+
+# Five services across two networks:
+#
+# - proxy: the only externally-reachable service. Forwards session/action
+#   calls to the backend/agents, and browser traffic to the frontend.
+# - backend: control plane and driver-update executor. Reachable only by the
+#   proxy, frontend, and maintainer via "internal". SSH to robots via
+#   "robot_net". Holds no driver wheels — installs from a tmpdir and forgets.
+# - frontend: HTML renderer. Internal-only; reached by the browser through
+#   the proxy. Calls the backend and the maintainer.
+# - maintainer: owns the versioned wheel store, builds the drivers wheel from
+#   a git checkout, and hands wheels + instructions to the backend. Internal
+#   only (needs internet egress for git/PyPI, never touches robot_net).
+# - db: postgres. Internal-only.
+#
+# "robot_net" bridges to the isolated robot subnet.
+
+services:
+  proxy:
+    build: ./proxy
+    ports:
+      - "8080:8080"
+    networks:
+      - internal
+      - robot_net
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      FRONTEND_URL: "http://frontend:8000"
+      PROXY_TIMEOUT: "200"
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    networks:
+      - internal
+      - robot_net
+    environment:
+      DATABASE_URL: "postgresql+psycopg://backend:${POSTGRES_PASSWORD}@db:5432/opentrons"
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      FERNET_KEY: ${FERNET_KEY:?set FERNET_KEY in .env}
+    tmpfs:
+      - /run/keys
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    networks:
+      - internal
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      MAINTAINER_URL: "http://maintainer:8000"
+    depends_on:
+      - backend
+      - maintainer
+
+  maintainer:
+    build: ./maintainer
+    networks:
+      - internal
+    environment:
+      BACKEND_URL: "http://backend:8000"
+      GITHUB_REPO: ${GITHUB_REPO:?set GITHUB_REPO in .env}
+      GIT_REF: ${DRIVERS_GIT_REF:-main}
+      DRIVERS_SUBDIR: ${DRIVERS_SUBDIR:-opentrons_drivers}
+    volumes:
+      - maint_data:/data
+    depends_on:
+      - backend
+
+  db:
+    image: postgres:16
+    networks:
+      - internal
+    environment:
+      POSTGRES_DB: opentrons
+      POSTGRES_USER: backend
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/app/db/schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backend -d opentrons"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  maint_data:
+
+networks:
+  internal:
+    driver: bridge
+  robot_net:
+    driver: bridge

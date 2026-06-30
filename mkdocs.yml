@@ -1,5 +1,5 @@
 site_name: Opentrons Drivers
-watch: [opentrons_drivers]
+watch: [drivers/opentrons_drivers]
 
 theme:
   name: material

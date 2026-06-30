@@ -1,0 +1,1 @@
+DELETE FROM robots WHERE robot_id = :robot_id;

@@ -1,0 +1,33 @@
+[project]
+name = "opentrons_control"
+# Version of the control-plane software (backend / proxy / frontend /
+# maintainer). Bump this, then rebuild and redeploy the Docker stack.
+version = "0.1.0"
+description = "Control-plane services for a fleet of Opentrons robots"
+authors = [
+    {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
+    {name = "Dan Davies", email = "d.w.davies@imperial.ac.uk"},
+    
+]
+# tomllib is stdlib from 3.11; the control machine runs 3.11+ (Docker images
+# are python:3.12, CI is 3.13).
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "pydantic",
+]
+
+# Convenience launcher: `pip install -e .` then run `letsgo`. Editable install
+# is required — the command resolves the compose directory relative to its own
+# source location, which only points back at the repo under an editable install.
+[project.scripts]
+letsgo = "opentrons_control.scripts.launch:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["opentrons_control*"]
