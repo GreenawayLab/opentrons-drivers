@@ -26,18 +26,18 @@ def metadata_gen() -> dict:
         base_config = json.load(bc_file)
     if base_config.get("robot_type") == "OT-2":
         metadata = {
-            "protocolName": "ot_agent",
-            "author": "Aleksandr Ostudin",
-            "description": "Activate OT based on HTTP requests",
+            "protocolName": f"{base_config.get('protocol_name')}",
+            "author": f"{base_config.get('author')}",
+            "description": f"{base_config.get('description')}",
             "apiLevel": f"{base_config.get('api_level')}",
         }
     else:
         metadata = {
-            "protocolName": "ot_agent",
-            "author": "Aleksandr Ostudin",
-            "description": "Activate OT based on HTTP requests",
+            "protocolName": f"{base_config.get('protocol_name')}",
+            "author": f"{base_config.get('author')}",
+            "description": f"{base_config.get('description')}",
         }
-        requirements = {"robotType" : "Flex", "apiLevel" : f"{base_config.get('api_level')}"}
+        requirements = {"robotType" : "Flex", "apiLevel" : f"{base_config.get("api_level")}"}
     return metadata
 
 metadata = metadata_gen()
