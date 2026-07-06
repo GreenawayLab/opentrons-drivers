@@ -55,7 +55,7 @@ pyyaml==6.0.3
     # via pre-commit
 ruff==0.15.15
     # via opentrons_drivers (pyproject.toml)
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via mypy
 virtualenv==21.4.2
     # via pre-commit
