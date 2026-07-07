@@ -127,6 +127,19 @@ async def _admin_or_redirect(
         return None, RedirectResponse(url=dashboard_for(user["role"]), status_code=303)
     return user, None
 
+async def _user_or_redirect(
+    request: Request,
+) -> tuple[Optional[dict[str, Any]], Optional[Response]]:
+    """
+    Resolve the current user; any signed-in role is allowed.
+
+    Returns ``(user, None)`` when signed in, or ``(None, redirect)`` to the
+    login page when not.
+    """
+    me = await call_backend(request, "GET", "/api/auth/me")
+    if me.status_code != 200:
+        return None, RedirectResponse(url="/login", status_code=303)
+    return me.json(), None
 
 # ------------------------------------------------------------------
 # Auth pages
@@ -367,6 +380,7 @@ async def set_git_token(request: Request, token: str = Form(...)) -> Response:
     return RedirectResponse(url="/admin/updates", status_code=303)
 
 
+
 # ------------------------------------------------------------------
 # User pages
 # ------------------------------------------------------------------
@@ -374,10 +388,10 @@ async def set_git_token(request: Request, token: str = Form(...)) -> Response:
 
 @app.get("/user/dashboard", response_class=HTMLResponse)
 async def user_dashboard(request: Request) -> Response:
-    me = await call_backend(request, "GET", "/api/auth/me")
-    if me.status_code != 200:
-        return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(request, "user/dashboard.html", {"user": me.json()})
+    user, redirect = await _user_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "user/dashboard.html", {"user": user})
 
 
 # ------------------------------------------------------------------
@@ -394,7 +408,7 @@ async def health() -> dict[str, str]:
 async def backend_unreachable(request: Request, exc: httpx.RequestError) -> Response:
     return templates.TemplateResponse(
         request,
-        "error.html",
+        "user/error.html",
         {"code": 502, "message": "The backend is unreachable. Try again in a moment."},
         status_code=502,
     )
@@ -404,7 +418,215 @@ async def backend_unreachable(request: Request, exc: httpx.RequestError) -> Resp
 async def not_found(request: Request, exc: Exception) -> Response:
     return templates.TemplateResponse(
         request,
-        "error.html",
+        "user/error.html",
         {"code": 404, "message": "That page does not exist."},
         status_code=404,
     )
+
+
+# ---- register (PUBLIC — add "/register" to the proxy allow-list) ----
+
+@app.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request) -> Response:
+    return templates.TemplateResponse(request, "auth/register.html", {})
+
+
+@app.post("/register")
+async def register_submit(request: Request) -> Response:
+    form = await request.form()
+    r = await call_backend(request, "POST", "/api/auth/register", json={
+        "name": form.get("name", ""),
+        "password": form.get("password", ""),
+        "code": form.get("code", ""),
+    })
+    if r.status_code == 200:
+        # invites only mint 'user', so a fresh account always lands here
+        resp = RedirectResponse(url="/user/dashboard", status_code=303)
+        _relay_set_cookie(r, resp)
+        return resp
+    detail = "Registration failed."
+    try:
+        detail = r.json().get("detail", detail)
+    except Exception:
+        pass
+    return templates.TemplateResponse(
+        request, "auth/register.html", {"error": detail}, status_code=r.status_code
+    )
+
+
+# ---- user: deck configuration ----
+
+@app.get("/user/configs", response_class=HTMLResponse)
+async def configs_page(request: Request) -> Response:
+    user, redirect = await _user_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "user/configs.html", {"user": user})
+
+
+@app.get("/user/actions", response_class=HTMLResponse)
+async def actions_page(request: Request) -> Response:
+    user, redirect = await _user_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "user/actions.html", {"user": user})
+
+
+@app.get("/user/library", response_class=HTMLResponse)
+async def library_page(request: Request) -> Response:
+    user, redirect = await _user_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "user/library.html", {"user": user})
+
+
+@app.get("/user/deck", response_class=HTMLResponse)
+async def deck_page(request: Request) -> Response:
+    user, redirect = await _user_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "user/deck.html", {"user": user})
+
+
+@app.get("/user/deck/labware")
+async def deck_list_labware(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/deck/labware")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/labware/{name}")
+async def deck_get_labware(request: Request, name: str) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/deck/labware/{name}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/deck/labware")
+async def deck_save_labware(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/deck/labware", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/standard-units")
+async def deck_list_units(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/deck/standard-units")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/deck/standard-units")
+async def deck_add_unit(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/deck/standard-units", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/configs")
+async def deck_list_configs(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/deck/configs")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/configs/mine")
+async def deck_configs_mine(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/deck/configs/mine")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/configs/others")
+async def deck_configs_others(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/deck/configs/others")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/configs/{config_id}")
+async def deck_get_config(request: Request, config_id: int) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/deck/configs/{config_id}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/deck/configs")
+async def deck_save_config(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/deck/configs", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/deck/configs/{config_id}/versions")
+async def deck_config_versions(request: Request, config_id: int) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/deck/configs/{config_id}/versions")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/deck/configs/{config_id}/family")
+async def deck_delete_family(request: Request, config_id: int) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/deck/configs/{config_id}/family")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/deck/configs/{config_id}")
+async def deck_delete_config(request: Request, config_id: int) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/deck/configs/{config_id}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+# ---- admin: user management (page + relays; no create — invites onboard) ----
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def users_page(request: Request) -> Response:
+    user, redirect = await _admin_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "admin/users.html", {"user": user})
+
+
+@app.get("/admin/users/list")
+async def users_list(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/users")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/admin/users/{user_id}")
+async def users_deactivate(request: Request, user_id: int) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/users/{user_id}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/admin/users/{user_id}/permissions")
+async def users_perms_list(request: Request, user_id: int) -> Response:
+    r = await call_backend(request, "GET", f"/api/users/{user_id}/permissions")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/admin/users/{user_id}/permissions")
+async def users_perms_grant(request: Request, user_id: int) -> Response:
+    r = await call_backend(request, "POST", f"/api/users/{user_id}/permissions", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/admin/users/{user_id}/permissions/{permission}")
+async def users_perms_revoke(request: Request, user_id: int, permission: str) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/users/{user_id}/permissions/{permission}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/admin/users/{user_id}/password")
+async def users_reset_password(request: Request, user_id: int) -> Response:
+    r = await call_backend(request, "POST", f"/api/users/{user_id}/password", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+# ---- admin: invites ----
+
+@app.get("/admin/invites")
+async def invites_list(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/invites")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/admin/invites")
+async def invites_issue(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/invites")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/admin/invites/{code}")
+async def invites_revoke(request: Request, code: str) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/invites/{code}")
+    return JSONResponse(r.json(), status_code=r.status_code)

@@ -1,0 +1,1 @@
+DELETE FROM deck_configs WHERE id = :id;

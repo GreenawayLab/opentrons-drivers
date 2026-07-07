@@ -47,8 +47,9 @@ GENERATED: dict[str, "callable[[], str]"] = {
     "POSTGRES_PASSWORD": _hex_secret,  # database
 }
 
-REQUIRED_USER = {
-    "GITHUB_REPO": "owner/repo  (the monorepo the maintainer builds from)",
+FIXED = {
+    "GITHUB_REPO": "GreenawayLab/opentrons-drivers",     # your single monorepo — set this once
+    "DRIVERS_GIT_REF": "main",       # default branch; change in .env for dev
 }
 
 
@@ -66,9 +67,8 @@ def _existing_keys(path: Path) -> set[str]:
 def main() -> None:
     present = _existing_keys(ENV_PATH)
 
-    to_append = [
-        (name, gen()) for name, gen in GENERATED.items() if name not in present
-    ]
+    to_append  = [(k, gen()) for k, gen in GENERATED.items() if k not in present]
+    to_append += [(k, v)     for k, v   in FIXED.items()     if k not in present]
 
     if to_append:
         # Ensure we start on a fresh line, then append only the missing keys.
@@ -88,10 +88,6 @@ def main() -> None:
         print(f"generated and appended: {', '.join(n for n, _ in to_append)}")
     else:
         print("all generated secrets already present; nothing changed")
-
-    missing_user = [k for k in REQUIRED_USER if k not in present and k not in dict(to_append)]
-    for key in missing_user:
-        print(f"  ACTION NEEDED: set {key}= in {ENV_PATH}  ({REQUIRED_USER[key]})")
 
     print(f"{ENV_PATH} ready")
 

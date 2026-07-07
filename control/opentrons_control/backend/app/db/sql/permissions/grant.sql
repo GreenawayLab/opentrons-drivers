@@ -1,0 +1,1 @@
+INSERT INTO user_permissions (user_id, permission) VALUES (:user_id, :permission) ON CONFLICT DO NOTHING;

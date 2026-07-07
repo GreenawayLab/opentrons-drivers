@@ -1,0 +1,1 @@
+SELECT count(*) AS n FROM users WHERE role = 'admin' AND deleted_at IS NULL;

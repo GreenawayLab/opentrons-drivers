@@ -27,6 +27,7 @@ from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.db.runner import fetch_one
 
 PBKDF2_ROUNDS = 260_000
+VALID_PERMISSIONS = frozenset({"add_labware", "add_config"})
 
 
 def hash_password(plain: str) -> str:
@@ -99,3 +100,13 @@ def require_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if user.role != "user":
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user role required")
     return user
+
+
+def has_permission(db: Session, user_id: int, permission: str) -> bool:
+    """Return True if the user holds the named permission.
+
+    Admins are not checked here (callers grant them a bypass), so admins are
+    never given permission rows. The valid set lives in code, not a DB CHECK,
+    so adding a capability later is a new string rather than a migration.
+    """
+    return fetch_one(db, "permissions/has.sql", {"user_id": user_id, "permission": permission}) is not None

@@ -1,0 +1,1 @@
+SELECT 1 FROM user_permissions WHERE user_id = :user_id AND permission = :permission;

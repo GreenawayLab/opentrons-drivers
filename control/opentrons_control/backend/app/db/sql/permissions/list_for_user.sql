@@ -1,0 +1,1 @@
+SELECT permission, granted_at FROM user_permissions WHERE user_id = :user_id ORDER BY permission;

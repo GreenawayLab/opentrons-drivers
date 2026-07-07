@@ -1,0 +1,1 @@
+SELECT id, name, config FROM deck_configs;

@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Five services across two networks:
 #
 # - proxy: the only externally-reachable service. Forwards session/action

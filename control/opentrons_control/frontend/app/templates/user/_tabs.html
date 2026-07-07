@@ -1,0 +1,21 @@
+{# Top tab strip for user pages. Active tab is derived from the request path,
+   so no route needs to pass a flag. The deck authoring page counts as Configs
+   (it is reached from there). Logout lives here, so pages carry no logout bar. #}
+<div class="tabs">
+  <div class="tabs-nav">
+    <a href="/user/dashboard"{% if request.url.path == "/user/dashboard" %} class="active"{% endif %}>Dashboard</a>
+    <a href="/user/configs"{% if request.url.path in ["/user/configs", "/user/deck"] %} class="active"{% endif %}>Configs</a>
+    <a href="/user/library"{% if request.url.path == "/user/library" %} class="active"{% endif %}>Library</a>
+    <a href="/user/actions"{% if request.url.path == "/user/actions" %} class="active"{% endif %}>Actions</a>
+  </div>
+  <form method="post" action="/logout"><button class="small">Log out ({{ user.name }})</button></form>
+</div>
+<style>
+  .tabs { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #eee; margin: 0 0 1.2rem; }
+  .tabs-nav { display: flex; gap: 4px; }
+  .tabs a { padding: 8px 16px; text-decoration: none; color: #666; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tabs a.active { color: #000; border-bottom-color: #333; font-weight: 500; }
+  .tabs a:hover { color: #000; }
+  .tabs form { margin: 0 0 6px; }
+  .tabs form button { margin: 0; }
+</style>

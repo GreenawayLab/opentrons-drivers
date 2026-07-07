@@ -1,0 +1,1 @@
+DELETE FROM user_invites WHERE code = :code AND used_by IS NULL;

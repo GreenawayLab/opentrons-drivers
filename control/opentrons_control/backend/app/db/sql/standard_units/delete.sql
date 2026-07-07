@@ -1,0 +1,1 @@
+DELETE FROM standard_units WHERE name = :name;

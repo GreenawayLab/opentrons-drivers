@@ -6,45 +6,30 @@ script reports it and exits without changes, so it is safe to run on every
 launch. If none exists and a terminal is attached, it prompts for a username
 and password and creates the account.
 
-Intended to run inside the backend container, which carries database access
-on the internal network and the application's password hashing:
+This is the one path that creates an account without redeeming an invite — the
+first admin has no issuer to redeem from, so it is the self-signed root of
+trust. It creates the account through the shared primitive (the same
+users/insert.sql + hash_password that /register uses) and waits for the
+database through the shared wait_for_db (the same guard the app uses at
+startup), so there is one way to write a user and one way to wait for the DB.
 
-    docker compose exec backend python -m app.scripts.seed_admin
+Intended to run inside the backend container, which carries database access on
+the internal network and the application's password hashing:
+
+    docker compose exec backend python -m opentrons_control.backend.app.scripts.seed_admin
 """
 
 import getpass
 import sys
-import time
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from opentrons_control.backend.app.settings.config import settings
 from opentrons_control.backend.app.security import hash_password
+from opentrons_control.backend.app.db.db_session import wait_for_db
+from opentrons_control.backend.app.db.runner import load_sql
 
 MIN_PASSWORD_LEN = 8
-CONNECT_RETRIES = 10
-CONNECT_BACKOFF_SECONDS = 1.5
-
-
-def _engine_when_ready():
-    """
-    Return an engine once the database accepts connections and the users
-    table is queryable, retrying briefly to cover the window where the
-    container reports up but Postgres is still finishing initialisation.
-    """
-    engine = create_engine(settings.database_url)
-    last_err: Exception | None = None
-    for attempt in range(CONNECT_RETRIES):
-        try:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1 FROM users LIMIT 1"))
-            return engine
-        except (OperationalError, ProgrammingError) as exc:
-            last_err = exc
-            time.sleep(CONNECT_BACKOFF_SECONDS * (attempt + 1))
-    print(f"Database not ready after {CONNECT_RETRIES} attempts: {last_err}")
-    sys.exit(1)
 
 
 def _admin_exists(engine) -> bool:
@@ -76,7 +61,9 @@ def _prompt_admin() -> tuple[str, str]:
 
 
 def main() -> None:
-    engine = _engine_when_ready()
+    # Standalone script: own engine, shared wait. wait_for_db returns it ready,
+    # and a successful probe means initdb finished, so users is queryable below.
+    engine = wait_for_db(create_engine(settings.database_url))
 
     if _admin_exists(engine):
         print("Admin account already exists. Skipping.")
@@ -84,17 +71,15 @@ def main() -> None:
 
     if not sys.stdin.isatty():
         print("No admin account exists and no terminal is attached to create one.")
-        print("Run: docker compose exec backend python -m app.scripts.seed_admin")
+        print("Run: docker compose exec backend "
+              "python -m opentrons_control.backend.app.scripts.seed_admin")
         sys.exit(1)
 
     name, password = _prompt_admin()
     with engine.begin() as conn:
         conn.execute(
-            text(
-                "INSERT INTO users (name, role, password_hash) "
-                "VALUES (:name, 'admin', :password_hash)"
-            ),
-            {"name": name, "password_hash": hash_password(password)},
+            text(load_sql("users/insert.sql")),
+            {"name": name, "role": "admin", "password_hash": hash_password(password)},
         )
     print(f"Admin account '{name}' created.")
 

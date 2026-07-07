@@ -1,0 +1,1 @@
+DELETE FROM labware WHERE name = :name;

@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block body %}
+  <div class="bar">
+    <h1>Users</h1>
+    <div class="nav">
+      <a href="/admin/dashboard">Robots</a>
+      <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
+    </div>
+  </div>
+
+  <div id="msg" data-me="{{ user.name }}"></div>
+
+  <section>
+    <h2>Invites <button id="btn-issue" class="small">+ issue code</button></h2>
+    <p class="muted">Single-use codes for new <code>user</code> accounts. Share a code;
+    the person registers at <code>/register</code>. To make an admin, create a user
+    then change their role below.</p>
+    <table id="invites-table">
+      <thead><tr><th>Code</th><th>Status</th><th>Issued by</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Accounts</h2>
+    <table id="users-table">
+      <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Permissions</th><th>Actions</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+<style>
+  section { margin: 1.5rem 0; }
+  #users-table td, #users-table th,
+  #invites-table td, #invites-table th { padding: 6px 10px; text-align: left; }
+  tr.inactive { opacity: .5; }
+  button.small { font-size: 12px; }
+  button.danger { color: #a32d2d; }
+  label.perm { display: inline-block; margin: 0 8px 0 0; font-size: 12px; }
+  label.perm input { width: auto; margin-right: 3px; }
+  #msg .error { color: #a32d2d; } #msg .ok { color: #0f6e56; }
+</style>
+
+<script>
+const ME = document.getElementById("msg").dataset.me;
+const PERMS = [["add_labware", "add labware"], ["add_config", "add configs"]];
+
+function msg(t, ok) {
+  document.getElementById("msg").innerHTML = t ? `<p class="${ok ? "ok" : "error"}">${t}</p>` : "";
+}
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let d = null; try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && (d.detail || d.error)) || `HTTP ${r.status}`);
+  return d;
+}
+
+// ---------- invites ----------
+async function loadInvites() {
+  const inv = await api("GET", "/admin/invites");
+  document.querySelector("#invites-table tbody").innerHTML = inv.map(i => {
+    const status = i.used_at ? `used by ${i.used_by_name}` : "unused";
+    const revoke = i.used_at ? "" : `<button class="small danger" data-revoke="${i.code}">revoke</button>`;
+    return `<tr><td><code>${i.code}</code></td><td>${status}</td>
+            <td>${i.created_by_name || ""}</td><td>${revoke}</td></tr>`;
+  }).join("") || `<tr><td colspan="4" class="muted">No invites.</td></tr>`;
+}
+
+// ---------- accounts ----------
+async function loadUsers() {
+  const users = await api("GET", "/admin/users/list");
+  // Pull each non-admin user's permissions in parallel to set the checkboxes.
+  const permsById = {};
+  await Promise.all(users.filter(u => u.active && u.role !== "admin").map(async u => {
+    permsById[u.id] = await api("GET", `/admin/users/${u.id}/permissions`);
+  }));
+  document.querySelector("#users-table tbody").innerHTML = users.map(u => {
+    const isMe = u.name === ME;
+    const pwBtn  = u.active ? `<button class="small" data-pw="${u.id}">reset pw</button>` : "";
+    const delBtn = (u.active && !isMe) ? `<button class="small danger" data-del="${u.id}">deactivate</button>` : "";
+    let permCell = "";
+    if (u.role === "admin") permCell = `<span class="muted">all (admin)</span>`;
+    else if (u.active) permCell = PERMS.map(([p, label]) => {
+      const on = (permsById[u.id] || []).includes(p);
+      return `<label class="perm"><input type="checkbox" data-perm="${u.id}:${p}" ${on ? "checked" : ""}> ${label}</label>`;
+    }).join(" ");
+    return `<tr class="${u.active ? "" : "inactive"}">
+      <td>${u.name}${isMe ? " <em>(you)</em>" : ""}</td>
+      <td>${u.role}</td>
+      <td>${u.active ? "active" : "inactive"}</td>
+      <td>${permCell}</td>
+      <td>${pwBtn} ${delBtn}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="muted">No accounts.</td></tr>`;
+}
+
+// ---------- actions ----------
+document.getElementById("btn-issue").onclick = async () => {
+  try { const r = await api("POST", "/admin/invites"); msg(`Issued code: ${r.code}`, true); await loadInvites(); }
+  catch (e) { msg(e.message, false); }
+};
+
+document.addEventListener("click", async e => {
+  const t = e.target;
+  try {
+    if (t.dataset.revoke) {
+      if (!confirm("Revoke this code?")) return;
+      await api("DELETE", "/admin/invites/" + encodeURIComponent(t.dataset.revoke)); await loadInvites();
+    } else if (t.dataset.del) {
+      if (!confirm("Deactivate this user?")) return;
+      await api("DELETE", `/admin/users/${t.dataset.del}`); await loadUsers();
+    } else if (t.dataset.pw) {
+      const pw = prompt("New password (min 8 chars):"); if (!pw) return;
+      await api("POST", `/admin/users/${t.dataset.pw}/password`, { password: pw });
+      msg("Password reset.", true);
+    }
+  } catch (err) { msg(err.message, false); }
+});
+
+document.addEventListener("change", async e => {
+  if (!e.target.dataset.perm) return;
+  const [id, perm] = e.target.dataset.perm.split(":");
+  const checked = e.target.checked;
+  try {
+    if (checked) await api("POST", `/admin/users/${id}/permissions`, { permission: perm });
+    else await api("DELETE", `/admin/users/${id}/permissions/${perm}`);
+    msg(`${checked ? "granted" : "revoked"} ${perm}`, true);
+  } catch (err) { e.target.checked = !checked; msg(err.message, false); }
+});
+
+loadInvites().catch(e => msg(e.message, false));
+loadUsers().catch(e => msg(e.message, false));
+</script>
+{% endblock %}

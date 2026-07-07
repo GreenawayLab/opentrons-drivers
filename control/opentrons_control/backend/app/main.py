@@ -15,7 +15,7 @@ import uvicorn
 from opentrons_control.backend.app.api import create_app
 from opentrons_control.backend.app.robot_sessions import Robot
 from opentrons_control.backend.app.vault import materialize_key
-from opentrons_control.backend.app.db.db_session import SessionLocal
+from opentrons_control.backend.app.db.db_session import SessionLocal, wait_for_db
 from opentrons_control.backend.app.db.runner import fetch
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 def load_robots() -> Dict[str, Robot]:
     """Read enabled robots from the database and resolve their SSH keys."""
     robots: Dict[str, Robot] = {}
+    wait_for_db()
     db = SessionLocal()
     try:
         for row in fetch(db, "robots/list_enabled.sql"):

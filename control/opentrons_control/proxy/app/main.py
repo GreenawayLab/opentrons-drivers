@@ -56,7 +56,7 @@ PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "200"))
 
 #: Path prefixes the proxy will forward to the frontend. Anything not matched
 #: here (and not matched by an explicit route below) is refused with 404.
-_HUMAN_PREFIXES = ("/login", "/logout", "/admin", "/user", "/static")
+_HUMAN_PREFIXES = ("/login", "/logout", "/register", "/admin", "/user", "/static")
 
 
 def _is_human_route(path: str) -> bool:

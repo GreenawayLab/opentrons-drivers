@@ -1,0 +1,1 @@
+SELECT s.name, s.category, u.name AS created_by_name FROM standard_units s LEFT JOIN users u ON u.id = s.created_by ORDER BY s.category, s.name;

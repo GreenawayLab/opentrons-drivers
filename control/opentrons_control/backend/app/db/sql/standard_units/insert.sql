@@ -1,0 +1,1 @@
+INSERT INTO standard_units (name, category, created_by) VALUES (:name, :category, :created_by);

@@ -46,7 +46,7 @@ from opentrons_control.backend.app.robot_sessions import (
     Session as RobotSession,
     SessionRegistry,
 )
-from opentrons_control.backend.app.routers import auth, admin
+from opentrons_control.backend.app.routers import auth, admin, deck, user
 from opentrons_control.backend.app import update
 from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.vault import get_secret
@@ -185,6 +185,8 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(admin.router)
+    app.include_router(deck.router)
+    app.include_router(user.router)
 
     # ------------------------------------------------------------------
     # Health and metadata
