@@ -54,6 +54,7 @@ from opentrons_control.backend.app.protocol_model import (
     custom_labware_refs,
     labware_wells,
 )
+from opentrons_control.backend.app.versioning import bump, classify_config_change
 
 router = APIRouter(prefix="/deck")
 
@@ -90,12 +91,16 @@ class SaveLabwareRequest(BaseModel):
 class ConfigSummary(BaseModel):
     id: int
     name: str
-    version: int
+    major: int
+    minor: int
+    patch: int
     created_at: Any
     owner_name: str | None = None
     origin_owner_name: str | None = None
     origin_name: str | None = None
-    origin_version: int | None = None
+    origin_major: int | None = None
+    origin_minor: int | None = None
+    origin_patch: int | None = None
 
 
 class ConfigDetail(BaseModel):
@@ -103,29 +108,29 @@ class ConfigDetail(BaseModel):
     owner: int
     owner_name: str
     name: str
-    version: int
+    major: int
+    minor: int
+    patch: int
     config: BaseConfig
     origin_owner_name: str | None
     origin_name: str | None
-    origin_version: int | None
-
-
-class ConfigOrigin(BaseModel):
-    owner_name: str
-    name: str
-    version: int
+    origin_major: int | None
+    origin_minor: int | None
+    origin_patch: int | None
 
 
 class VersionInfo(BaseModel):
     id: int
-    version: int
+    major: int
+    minor: int
+    patch: int
     created_at: Any
 
 
 class SaveConfigRequest(BaseModel):
     name: str
     config: BaseConfig
-    origin: ConfigOrigin | None = None
+    base_id: int | None = None
 
 
 class StandardUnitInfo(BaseModel):
@@ -274,10 +279,10 @@ def get_config(
         raise HTTPException(status_code=404, detail=f"unknown config {config_id}")
     return ConfigDetail(
         id=row["id"], owner=row["owner"], owner_name=row["owner_name"],
-        name=row["name"], version=row["version"],
+        name=row["name"], major=row["major"], minor=row["minor"], patch=row["patch"],
         config=BaseConfig.model_validate(row["config"]),
-        origin_owner_name=row["origin_owner_name"],
-        origin_name=row["origin_name"], origin_version=row["origin_version"],
+        origin_owner_name=row["origin_owner_name"], origin_name=row["origin_name"],
+        origin_major=row["origin_major"], origin_minor=row["origin_minor"], origin_patch=row["origin_patch"],
     )
 
 
@@ -299,10 +304,11 @@ def save_config(
 ) -> dict[str, Any]:
     """Save a config as a new version.
 
-    Requires add_config (admins bypass). Every save writes a new row. If the
-    caller already has a family with this name the version bumps and the family
-    origin is preserved. Otherwise it is version 1, carrying the fork origin if
-    one was passed (which the caller sets only when adopting a peer's config).
+    Requires add_config (admins bypass). Every save writes a new row. base_id is
+    the version the edit derives from. Editing the family head bumps the semver
+    (axis auto-classified by diff). Editing a non-head version, a peer's config,
+    or saving under a new name forks a new family with a heritage snapshot. A
+    blank new config (no base_id) starts a fresh family at 1.0.0.
     """
     _gate(user, db, "add_config")
     available = {r["name"] for r in fetch(db, "labware/list.sql")}
@@ -332,33 +338,62 @@ def save_config(
                     detail=f"plate '{pname}' uses wells not in {plate.type}: {', '.join(bad)}",
                 )
 
-    latest = fetch_one(db, "deck_configs/latest_for_family.sql", {"owner": user.id, "name": req.name})
-    if latest is not None:
-        if req.origin is not None:
+    head = fetch_one(db, "deck_configs/latest_for_family.sql", {"owner": user.id, "name": req.name})
+
+    if req.base_id is None:
+        # A blank new config. The name must be free: load an existing family to
+        # version it, or choose a new name.
+        if head is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"you already own a config named '{req.name}', rename this adoption",
+                detail=f"you already own a config named '{req.name}', load it to version or pick a new name",
             )
-        version = latest["version"] + 1
-        origin = (latest["origin_owner_name"], latest["origin_name"], latest["origin_version"])
+        version = (1, 0, 0)
+        origin = (None, None, None, None, None)
     else:
-        version = 1
-        origin = (
-            (req.origin.owner_name, req.origin.name, req.origin.version)
-            if req.origin is not None
-            else (None, None, None)
+        base = fetch_one(db, "deck_configs/get.sql", {"id": req.base_id})
+        if base is None:
+            raise HTTPException(status_code=404, detail=f"unknown base config {req.base_id}")
+        editing_head = (
+            head is not None and base["id"] == head["id"]
+            and base["owner"] == user.id and base["name"] == req.name
         )
+        if editing_head:
+            # In-family version bump, classified by diffing the new config against
+            # the head. The highest changed axis wins and lower axes reset.
+            axis = classify_config_change(BaseConfig.model_validate(base["config"]), req.config)
+            if axis is None:
+                raise HTTPException(status_code=409, detail="no changes to save")
+            version = bump((head["major"], head["minor"], head["patch"]), axis)
+            origin = (
+                head["origin_owner_name"], head["origin_name"],
+                head["origin_major"], head["origin_minor"], head["origin_patch"],
+            )
+        else:
+            # Editing a non-head version, adopting a peer's config, or saving under
+            # a new name: fork into a new family carrying a heritage snapshot of the
+            # base. The name must be free (the B-guard).
+            if head is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"you already own a config named '{req.name}', rename to fork it",
+                )
+            version = (1, 0, 0)
+            origin = (base["owner_name"], base["name"], base["major"], base["minor"], base["patch"])
 
     row = execute_returning(
         db,
         "deck_configs/insert.sql",
         {
-            "owner": user.id, "name": req.name, "version": version,
+            "owner": user.id, "name": req.name,
+            "major": version[0], "minor": version[1], "patch": version[2],
             "config": req.config.model_dump_json(),
-            "origin_owner_name": origin[0], "origin_name": origin[1], "origin_version": origin[2],
+            "origin_owner_name": origin[0], "origin_name": origin[1],
+            "origin_major": origin[2], "origin_minor": origin[3], "origin_patch": origin[4],
         },
     )
-    return {"status": "saved", "id": row["id"] if row else None, "name": req.name, "version": version}
+    return {"status": "saved", "id": row["id"] if row else None, "name": req.name,
+            "version": f"{version[0]}.{version[1]}.{version[2]}"}
 
 
 def _owned_or_admin(db: Session, config_id: int, user: CurrentUser) -> dict[str, Any]:

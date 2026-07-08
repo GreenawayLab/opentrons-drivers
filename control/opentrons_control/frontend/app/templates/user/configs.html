@@ -5,6 +5,12 @@
 
   <div id="msg"></div>
 
+  <div id="draft-banner" style="display:none; margin:0 0 1rem; padding:8px 12px; background:#fff7e0; border:1px solid #e0c060; border-radius:6px">
+    You have a saved config draft (<span id="draft-when"></span>).
+    <button id="draft-continue">Continue draft</button>
+    <button id="draft-discard">Discard draft</button>
+  </div>
+
   <div class="bar">
     <h2>My configs</h2>
     <a href="/user/deck" class="btn-new">New config</a>
@@ -55,9 +61,9 @@ async function loadMine() {
   const list = await api("GET", "/user/deck/configs/mine");
   document.querySelector("#mine-table tbody").innerHTML = list.map(c => {
     const heritage = c.origin_name
-      ? `<span class="muted">from ${c.origin_owner_name}/${c.origin_name} v${c.origin_version}</span>` : "";
+      ? `<span class="muted">from ${c.origin_owner_name}/${c.origin_name} v${c.origin_major}.${c.origin_minor}.${c.origin_patch}</span>` : "";
     return `<tr>
-      <td>${c.name}</td><td>v${c.version}</td><td>${heritage}</td>
+      <td>${c.name}</td><td>v${c.major}.${c.minor}.${c.patch}</td><td>${heritage}</td>
       <td>
         <a href="/user/deck?edit=${c.id}">edit</a>
         <button class="small" data-versions="${c.id}">versions</button>
@@ -71,7 +77,7 @@ async function loadOthers() {
   const list = await api("GET", "/user/deck/configs/others");
   document.querySelector("#others-table tbody").innerHTML = list.map(c =>
     `<tr>
-      <td>${c.owner_name}</td><td>${c.name}</td><td>v${c.version}</td>
+      <td>${c.owner_name}</td><td>${c.name}</td><td>v${c.major}.${c.minor}.${c.patch}</td>
       <td><a href="/user/deck?adopt=${c.id}">adopt</a></td>
     </tr>`
   ).join("") || `<tr><td colspan="4" class="muted">None.</td></tr>`;
@@ -81,7 +87,7 @@ async function showVersions(id) {
   const vs = await api("GET", "/user/deck/configs/" + id + "/versions");
   document.getElementById("versions-panel").innerHTML =
     `<b>Version history</b><br>`
-    + vs.map(v => `v${v.version} <a href="/user/deck?edit=${v.id}">load</a> `
+    + vs.map(v => `v${v.major}.${v.minor}.${v.patch} <a href="/user/deck?edit=${v.id}">load</a> `
                 + `<button class="small danger" data-delver="${v.id}">delete</button>`).join("<br>")
     + `<br><button class="small" data-closeversions="1">close</button>`;
 }
@@ -104,7 +110,22 @@ document.addEventListener("click", async e => {
   } catch (err) { msg(err.message, false); }
 });
 
+async function checkDraft() {
+  let d = null;
+  try { d = await api("GET", "/user/draft/config"); } catch (_) { return; }
+  if (!d || !d.content) return;
+  document.getElementById("draft-when").textContent = "saved " + String(d.updated_at || "").slice(0, 16).replace("T", " ");
+  document.getElementById("draft-banner").style.display = "";
+  // continue opens the editor, which restores the draft from ?draft=1
+  document.getElementById("draft-continue").onclick = () => { window.location.href = "/user/deck?draft=1"; };
+  document.getElementById("draft-discard").onclick = async () => {
+    try { await api("DELETE", "/user/draft/config"); document.getElementById("draft-banner").style.display = "none"; }
+    catch (e) { msg(e.message, false); }
+  };
+}
+
 loadMine().catch(e => msg(e.message, false));
 loadOthers().catch(e => msg(e.message, false));
+checkDraft().catch(e => msg(e.message, false));
 </script>
 {% endblock %}

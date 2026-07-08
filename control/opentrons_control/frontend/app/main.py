@@ -464,6 +464,24 @@ async def configs_page(request: Request) -> Response:
     return templates.TemplateResponse(request, "user/configs.html", {"user": user})
 
 
+@app.put("/user/draft/{kind}")
+async def draft_save(request: Request, kind: str) -> Response:
+    r = await call_backend(request, "PUT", f"/api/user/draft/{kind}", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/draft/{kind}")
+async def draft_get(request: Request, kind: str) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/draft/{kind}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/draft/{kind}")
+async def draft_delete(request: Request, kind: str) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/draft/{kind}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/user/actions", response_class=HTMLResponse)
 async def actions_page(request: Request) -> Response:
     user, redirect = await _user_or_redirect(request)

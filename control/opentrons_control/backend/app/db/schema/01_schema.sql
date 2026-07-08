@@ -82,18 +82,27 @@ CREATE TABLE labware (
 -- history), version increments within an (owner, name) family. Heritage of a
 -- fork is stored as a SNAPSHOT (origin_owner_name / origin_name / origin_version),
 -- not a foreign key, so it stays true even after the source is edited or deleted.
+-- Versions are semver (major.minor.patch), auto-classified on save from a diff
+-- against the family head: major = labware/pipette set, minor = positions/offsets,
+-- patch = well contents. The highest changed axis bumps, lower axes reset. Editing
+-- a non-head version does not branch in-family, it forks into a new family (heritage
+-- snapshot), so a family stays a single line ordered by (major, minor, patch).
 CREATE TABLE deck_configs (
     id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     owner              BIGINT      NOT NULL
                        CONSTRAINT deck_configs_owner_fkey REFERENCES users (id),
     name               TEXT        NOT NULL,
-    version            INTEGER     NOT NULL,
+    major              INTEGER     NOT NULL,
+    minor              INTEGER     NOT NULL,
+    patch              INTEGER     NOT NULL,
     config             JSONB       NOT NULL,
     origin_owner_name  TEXT,
     origin_name        TEXT,
-    origin_version     INTEGER,
+    origin_major       INTEGER,
+    origin_minor       INTEGER,
+    origin_patch       INTEGER,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT deck_configs_family_version_key UNIQUE (owner, name, version)
+    CONSTRAINT deck_configs_family_version_key UNIQUE (owner, name, major, minor, patch)
 );
 
 -- ============================== user onboarding ==============================
@@ -142,4 +151,22 @@ CREATE TABLE user_permissions (
     permission  TEXT        NOT NULL,
     granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT user_permissions_pkey PRIMARY KEY (user_id, permission)
+);
+
+-- ============================== drafts ==============================
+
+-- Unsaved editor state. Deliberately dumb: a JSONB blob with NO validation, NO
+-- versioning, NO heritage, and no FK into the versioned tables. A draft is
+-- allowed to be broken (half-filled, no pipette, dangling refs) precisely
+-- because it is not a version. One draft per user per kind (config or plan).
+-- A successful save into the versioned entity deletes it; the user can also
+-- discard it explicitly. Saving is explicit (a button), never autosaved.
+CREATE TABLE drafts (
+    user_id     BIGINT      NOT NULL
+                CONSTRAINT drafts_user_fkey REFERENCES users (id),
+    kind        TEXT        NOT NULL
+                CONSTRAINT drafts_kind_check CHECK (kind IN ('config', 'plan')),
+    content     JSONB       NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT drafts_pkey PRIMARY KEY (user_id, kind)
 );

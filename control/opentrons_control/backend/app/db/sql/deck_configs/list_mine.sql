@@ -1,6 +1,6 @@
 SELECT DISTINCT ON (name)
-       id, name, version, created_at,
-       origin_owner_name, origin_name, origin_version
+       id, name, major, minor, patch, created_at,
+       origin_owner_name, origin_name, origin_major, origin_minor, origin_patch
 FROM deck_configs
 WHERE owner = :owner
-ORDER BY name, version DESC;
+ORDER BY name, major DESC, minor DESC, patch DESC;

@@ -1,0 +1,1 @@
+SELECT content, updated_at FROM drafts WHERE user_id = :user_id AND kind = :kind;

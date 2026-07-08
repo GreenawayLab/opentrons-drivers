@@ -15,7 +15,9 @@
     <div id="heritage" class="muted"></div>
     <label>Name <input id="config-name" placeholder="screening"></label>
     <button id="btn-save">Save config</button>
+    <button id="btn-save-draft">Save as draft</button>
     <div id="save-err" class="error"></div>
+    <p class="muted" style="font-size:12px">Not saved automatically. Save it as a draft to keep it across reloads.</p>
   </section>
 
   <section>
@@ -44,7 +46,7 @@
   .plate .offsets input { width: 70px; min-width: 0; }
   .plate .apply-all { margin: 8px 0; padding: 6px 10px; background: #f0f7ff; border: 1px solid #d0e3f5; border-radius: 6px; }
   .plate .apply-all input { width: 120px; }
-  .plate .cap { font-size: 11px; color: #888; }
+  .plate .cap { font-size: 11px; color: #888; margin-left: 4px; white-space: nowrap; }
   .plate .no-content { font-size: 12px; margin: 8px 0; }
   .plate { border: 1px solid var(--border, #ccc); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
   .plate .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
@@ -145,9 +147,9 @@ async function applyLabwareDef(p, name) {
 function plateCard(p, kind, idx) {
   const isCore = kind === "core";
   const isFile = (p.type || "").endsWith(".json");
-  const capHint = p.capacity != null ? ` <span class="cap">def max ${p.capacity}</span>` : "";
+  const capHint = p.capacity != null ? ` <span class="cap">(def max ${p.capacity})</span>` : "";
   const maxField = (isCore && isFile)
-    ? `<label>max µL/well<input type="number" value="${p.max_volume ?? ""}" ${p.capacity != null ? `max="${p.capacity}"` : ""} data-f="${kind}:${idx}:max_volume" placeholder="${p.capacity ?? 300}">${capHint}</label>`
+    ? `<label>max µL/well${capHint}<input type="number" value="${p.max_volume ?? ""}" ${p.capacity != null ? `max="${p.capacity}"` : ""} data-f="${kind}:${idx}:max_volume" placeholder="${p.capacity ?? 300}"></label>`
     : "";
   return `<div class="plate">
     <div class="row">
@@ -275,13 +277,11 @@ async function saveConfig() {
       }
     }
   }
-  // Editing your own family bumps its version. Adopting a peer forks with heritage,
-  // unless the name is one you already own (the backend rejects that so the lineage
-  // is not silently absorbed, shown in the inline error below).
-  const body = { name, config: cfg };
-  if (originRef) body.origin = originRef;
+  // base_id is the version this edit derives from. The backend bumps if it is the
+  // family head, otherwise forks a new family. A blank new config sends null.
   try {
-    await api("POST", "/configs", body);
+    await api("POST", "/configs", { name, config: cfg, base_id: baseId });
+    try { await draftReq("DELETE"); } catch (_) {}
     window.location.href = "/user/configs";
   } catch (e) {
     document.getElementById("save-err").textContent = e.message;
@@ -304,26 +304,37 @@ function loadIntoForm(cfg) {
 }
 // Prefill is driven by the Configs tab via ?edit=<id> (bump your own family) or
 // ?adopt=<id> (fork a peer, carrying heritage). No param means a blank config.
-let originRef = null;
+const ME = "{{ user.name }}";
+let baseId = null;   // the version this edit derives from (null = a blank new config)
+// Set baseId and the heritage line from a fetched config (editing head vs fork).
+async function setBaseHeritage(c) {
+  baseId = c.id;
+  const ver = `${c.major}.${c.minor}.${c.patch}`;
+  const isMine = c.owner_name === ME;
+  let isHead = false;
+  if (isMine) {
+    const mine = await api("GET", "/configs/mine");
+    const head = mine.find(x => x.name === c.name);
+    isHead = !!(head && head.id === c.id);
+  }
+  const h = document.getElementById("heritage");
+  if (isMine && isHead) {
+    h.className = "muted";
+    h.innerHTML = `Editing <b>${c.name}</b> v${ver}. Saving bumps the version automatically.`;
+  } else {
+    const src = isMine ? `an older version (v${ver})` : `<b>${c.owner_name}/${c.name}</b> v${ver}`;
+    h.className = "error";
+    h.innerHTML = `Saving forks a NEW protocol from ${src}. Give it a new name — you cannot save over a name you already own.`;
+  }
+}
 async function initFromParams() {
   const params = new URLSearchParams(window.location.search);
-  const editId = params.get("edit");
-  const adoptId = params.get("adopt");
-  if (editId) {
-    const c = await api("GET", "/configs/" + editId);
-    document.getElementById("config-name").value = c.name;
-    document.getElementById("heritage").innerHTML =
-      `Editing <b>${c.name}</b> (currently v${c.version}). Saving makes v${c.version + 1}.`;
-    loadIntoForm(c.config);
-  } else if (adoptId) {
-    const c = await api("GET", "/configs/" + adoptId);
-    originRef = { owner_name: c.owner_name, name: c.name, version: c.version };
-    document.getElementById("config-name").value = c.name;
-    document.getElementById("heritage").innerHTML =
-      `Adopting <b>${c.owner_name}/${c.name} v${c.version}</b>. Saving makes your own copy `
-      + `with this heritage. If you already own a config with this name, rename it.`;
-    loadIntoForm(c.config);
-  }
+  const loadId = params.get("edit") || params.get("adopt");
+  if (!loadId) return;  // blank new config
+  const c = await api("GET", "/configs/" + loadId);
+  loadIntoForm(c.config);
+  document.getElementById("config-name").value = c.name;
+  await setBaseHeritage(c);
 }
 
 // ---------- wiring ----------
@@ -331,6 +342,45 @@ document.getElementById("btn-add-core").onclick = () => newPlate("core");
 document.getElementById("btn-add-stock").onclick = () => newPlate("stock");
 document.getElementById("btn-save").onclick = saveConfig;
 
-(async () => { try { await loadUnits(); await initFromParams(); renderPlates(); } catch (e) { msg(e.message, false); } })();
+// ---------- drafts (config editor uses /user/draft/config directly, since api() is deck-prefixed) ----------
+async function draftReq(method, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch("/user/draft/config", opt);
+  let d = null; try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && d.detail) || `HTTP ${r.status}`);
+  return d;
+}
+document.getElementById("btn-save-draft").onclick = async () => {
+  try {
+    const content = { config: buildConfig(), name: document.getElementById("config-name").value, base_id: baseId };
+    await draftReq("PUT", { content });
+    msg("Config draft saved.", true);
+  } catch (e) { msg(e.message, false); }
+};
+async function restoreConfigDraft(content) {
+  loadIntoForm(content.config || { pipettes: {}, core_plates: {}, stock_plates: {} });
+  document.getElementById("config-name").value = content.name || "";
+  baseId = content.base_id || null;
+  const h = document.getElementById("heritage");
+  if (baseId) {
+    try { await setBaseHeritage(await api("GET", "/configs/" + baseId)); }
+    catch (_) { baseId = null; h.className = "muted"; h.innerHTML = "Restored draft (its base version is gone; saving starts a new family)."; }
+  } else { h.className = "muted"; h.innerHTML = "Restored draft (new config)."; }
+}
+
+(async () => {
+  try {
+    await loadUnits();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("draft")) {
+      const d = await draftReq("GET");
+      if (d && d.content) await restoreConfigDraft(d.content); else await initFromParams();
+    } else {
+      await initFromParams();
+    }
+    renderPlates();
+  } catch (e) { msg(e.message, false); }
+})();
 </script>
 {% endblock %}
