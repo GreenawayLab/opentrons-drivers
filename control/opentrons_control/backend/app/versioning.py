@@ -17,6 +17,8 @@ highest one (contents plus a new plate is major, not patch).
 
 from __future__ import annotations
 
+from typing import Any
+
 from opentrons_control.backend.app.protocol_model import BaseConfig, PlateInfo
 
 Version = tuple[int, int, int]
@@ -89,4 +91,79 @@ def classify_config_change(old: BaseConfig, new: BaseConfig) -> str | None:
 def next_config_version(old: BaseConfig, new: BaseConfig, head: Version) -> Version | None:
     """The version a new config save should take, or None if nothing changed."""
     axis = classify_config_change(old, new)
+    return None if axis is None else bump(head, axis)
+
+
+# ============================ action plans ============================
+# Plans version on the same three axes, classified from the ordered step list
+# (dicts, the plan wire format):
+#
+# * major  the step SET and what each step does: kind, substance or plates, and
+#          the target wells or transfer edges. Add, remove, or change what a
+#          step does and it is major.
+# * minor  the order of the steps and their methods (the how).
+# * patch  the volumes.
+
+
+def _step_identity(step: dict) -> tuple:
+    """What a step is and does, independent of order and volumes."""
+    kind = step.get("kind")
+    if kind == "add_stock":
+        return (kind, step.get("substance"), step.get("dest_plate"),
+                tuple(sorted(step.get("wells", []))))
+    return (kind, step.get("source_plate"), step.get("receiver_plate"),
+            tuple(sorted((e.get("src"), e.get("dst")) for e in step.get("edges", []))))
+
+
+def _how_sig(step: dict) -> tuple:
+    how = step.get("how") or {}
+    return tuple(sorted(how.items()))
+
+
+def _plan_identity_set(steps: list) -> list:
+    """Order-independent multiset of step identities (the major axis)."""
+    return sorted(_step_identity(s) for s in steps)
+
+
+def _plan_order_method_sig(steps: list) -> list:
+    """Ordered identities plus each step's method (the minor axis)."""
+    return [(_step_identity(s), _how_sig(s)) for s in steps]
+
+
+def _cell_sig(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        if v.get("mode") == "fill_to":
+            return ("fill_to", v.get("target"))
+        return ("value", v.get("value"))
+    return ("value", v)
+
+
+def _plan_volume_sig(steps: list) -> list:
+    """Per-step volumes (the patch axis)."""
+    out: list = []
+    for s in steps:
+        if s.get("kind") == "add_stock":
+            vols = s.get("volumes") or {}
+            out.append(tuple(sorted((w, _cell_sig(c)) for w, c in vols.items())))
+        else:
+            out.append(tuple(e.get("volume") for e in s.get("edges", [])))
+    return out
+
+
+def classify_plan_change(old_steps: list, new_steps: list) -> str | None:
+    """Return the highest changed axis for a plan, or None if equivalent."""
+    if _plan_identity_set(old_steps) != _plan_identity_set(new_steps):
+        return "major"
+    if _plan_order_method_sig(old_steps) != _plan_order_method_sig(new_steps):
+        return "minor"
+    if _plan_volume_sig(old_steps) != _plan_volume_sig(new_steps):
+        return "patch"
+    return None
+
+
+def next_plan_version(old_steps: list, new_steps: list, head: Version) -> Version | None:
+    """The version a plan save should take, or None if nothing changed."""
+    axis = classify_plan_change(old_steps, new_steps)
     return None if axis is None else bump(head, axis)

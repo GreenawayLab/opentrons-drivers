@@ -27,7 +27,7 @@ from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.db.runner import fetch_one
 
 PBKDF2_ROUNDS = 260_000
-VALID_PERMISSIONS = frozenset({"add_labware", "add_config"})
+VALID_PERMISSIONS = frozenset({"add_labware", "add_config", "add_plan"})
 
 
 def hash_password(plain: str) -> str:

@@ -12,6 +12,21 @@
   </div>
 
   <section>
+    <div class="planbar">
+      <label>Plan <input id="plan-name" placeholder="screening run"></label>
+      <label>Load <select id="plan-load"><option value="">— new plan —</option></select></label>
+    </div>
+    <div class="planbar-buttons">
+      <button id="btn-check" class="small">Check</button>
+      <button id="btn-save-plan" class="small">Save plan</button>
+      <button id="btn-save-draft" class="small">Save as draft</button>
+      <button id="btn-delete-plan" class="small danger" style="display:none">Delete</button>
+    </div>
+    <div id="plan-heritage" class="muted"></div>
+    <p class="muted" style="font-size:12px">Not saved automatically. Save the plan, or save a draft to keep work across reloads.</p>
+  </section>
+
+  <section>
     <label>Config
       <select id="config-name"><option value="">— pick a config —</option></select>
     </label>
@@ -33,11 +48,8 @@
       <thead><tr><th>#</th><th>Kind</th><th>Summary</th><th>Order</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <p class="muted">fill_to and capacity/overflow validation are resolved by the replay engine (backend, later).</p>
-    <div class="draftbar">
-      <button id="btn-save-draft" class="small">Save as draft</button>
-      <span class="muted">Not saved automatically. Save it as a draft to keep it across reloads.</span>
-    </div>
+    <p class="muted">Check dry-runs the plan against its config: fill_to, well overflow, and stock shortfalls.</p>
+    <div id="check-result"></div>
   </section>
 
   <section id="editor" style="display:none">
@@ -97,6 +109,8 @@
       </div>
     </div>
 
+    <div id="how-section" class="how-section"></div>
+
     <button id="edit-done" class="small">Done</button>
   </section>
 
@@ -128,6 +142,11 @@
   .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; vertical-align: middle; }
   .draft-banner { margin: 0 0 1rem; padding: 8px 12px; background: #fff7e0; border: 1px solid #e0c060; border-radius: 6px; }
   .draftbar { margin-top: 10px; }
+  .planbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .planbar-buttons { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .how-section { margin-top: 12px; padding: 10px 12px; background: #f6f6f9; border: 1px solid #e0e0ea; border-radius: 6px; }
+  .how-section h4 { margin: 0 0 6px; font-size: 13px; }
+  .how-section label { margin-right: 14px; }
 </style>
 
 <script>
@@ -146,7 +165,8 @@ async function api(method, path, body) {
 }
 
 const plan = { config_id: null, steps: [] };
-let nextId = 1, cfg = null, substances = [], corePlates = [];
+const ME = "{{ user.name }}";
+let nextId = 1, cfg = null, substances = [], corePlates = [], planBaseId = null;
 const wellCache = {};
 
 function newStep(kind) {
@@ -234,6 +254,66 @@ function renderModes() {
      <button class="small ${editMode === "volumes" ? "on" : ""}" data-mode="volumes">Set volumes</button>`;
 }
 
+// methods and their hyperparameter specs come from the admin registry, never hardcoded
+const DEFAULT_METHOD = "basic_liquid_transfer";
+let methods = [];   // [{name, params: [{name, units, min, max}]}]
+
+async function loadMethods() {
+  try { methods = await api("GET", "/user/methods"); } catch (_) { methods = []; }
+}
+
+function renderHow() {
+  const h = editStep.how;
+  if (!h.method) h.method = DEFAULT_METHOD;
+  if (!h.tip) h.tip = "fresh";
+  if (!h.pipette) h.pipette = "auto";
+  if (!h.params) h.params = {};
+  const spec = methods.find(m => m.name === h.method);
+  const specParams = (spec && spec.params) || [];
+  const methodOpts = methods.map(m => `<option value="${m.name}" ${m.name === h.method ? "selected" : ""}>${m.name}</option>`).join("")
+    || `<option value="${DEFAULT_METHOD}">${DEFAULT_METHOD}</option>`;
+  const pips = Object.entries((cfg && cfg.pipettes) || {});
+  const pipOpts = `<option value="auto" ${h.pipette === "auto" ? "selected" : ""}>auto (by volume)</option>`
+    + pips.map(([mount, p]) => `<option value="${mount}" ${h.pipette === mount ? "selected" : ""}>${mount}: ${p.model}</option>`).join("");
+  const paramField = pp => {
+    const label = pp.name + (pp.units ? ` (${pp.units})` : "");
+    const cur = h.params[pp.name];
+    if (pp.dtype === "bool") {
+      return `<label>${label} <input type="checkbox" data-hp="${pp.name}" data-dt="bool" ${cur ? "checked" : ""}></label>`;
+    }
+    const step = pp.dtype === "int" ? ` step="1"` : "";
+    const attrs = (pp.min != null ? ` min="${pp.min}"` : "") + (pp.max != null ? ` max="${pp.max}"` : "") + step;
+    return `<label>${label} <input type="number" data-hp="${pp.name}" data-dt="${pp.dtype || "float"}"${attrs} value="${cur ?? ""}" style="width:76px"></label>`;
+  };
+  document.getElementById("how-section").innerHTML = `
+    <h4>Method &amp; tips</h4>
+    <label>Method <select id="how-method">${methodOpts}</select></label>
+    <span id="how-params">${specParams.map(paramField).join("")}</span>
+    <label>Tip
+      <select id="how-tip">
+        <option value="fresh" ${h.tip === "fresh" ? "selected" : ""}>new tip each transfer</option>
+        <option value="reuse" ${h.tip === "reuse" ? "selected" : ""}>reuse one tip</option>
+      </select>
+    </label>
+    <label>Pipette <select id="how-pipette">${pipOpts}</select></label>
+    <p class="muted" style="font-size:11px">${specParams.length ? "Enter the parameters for this method." : "This method has no parameters."}</p>`;
+  document.getElementById("how-method").onchange = e => { editStep.how.method = e.target.value; editStep.how.params = {}; renderHow(); };
+  document.getElementById("how-tip").onchange = e => { editStep.how.tip = e.target.value; };
+  document.getElementById("how-pipette").onchange = e => { editStep.how.pipette = e.target.value; };
+  document.querySelectorAll("#how-params [data-hp]").forEach(inp => {
+    const handler = e => {
+      const key = e.target.dataset.hp, dt = e.target.dataset.dt;
+      if (dt === "bool") { editStep.how.params[key] = e.target.checked; return; }
+      const v = e.target.value;
+      if (v === "") { delete editStep.how.params[key]; return; }
+      // store the declared type, so an int stays an int (a float 1 would break range())
+      editStep.how.params[key] = dt === "int" ? parseInt(v, 10) : parseFloat(v);
+    };
+    inp.oninput = handler;
+    inp.onchange = handler;
+  });
+}
+
 function renderEditor() {
   const isAdd = editStep.kind === "add_stock";
   document.getElementById("hdr-add").style.display = isAdd ? "" : "none";
@@ -254,6 +334,7 @@ function renderEditor() {
     document.getElementById("phase-move").style.display = "";
     renderMove();
   }
+  renderHow();
 }
 
 // ---------- add_stock selection ----------
@@ -552,28 +633,35 @@ async function loadConfigs() {
 
 // ---------- drafts (explicit save, banner-based restore) ----------
 document.getElementById("btn-save-draft").onclick = async () => {
-  try { await api("PUT", "/user/draft/plan", { content: { config_id: plan.config_id, steps: plan.steps } }); msg("Plan draft saved.", true); }
+  try { await api("PUT", "/user/draft/plan", { content: { config_id: plan.config_id, steps: plan.steps, name: document.getElementById("plan-name").value, base_id: planBaseId } }); msg("Plan draft saved.", true); }
   catch (e) { msg(e.message, false); }
 };
+
+// set the config name+version selects to reflect a pinned config version (no step reset)
+async function setConfigSelects(config_id) {
+  try { await loadConfigMeta(config_id); } catch (_) {}
+  if (!config_id) return;
+  try {
+    const detail = await api("GET", "/user/deck/configs/" + config_id);
+    const mine = await api("GET", "/user/deck/configs/mine");
+    const fam = mine.find(x => x.name === detail.name);
+    if (fam) {
+      document.getElementById("config-name").value = fam.id; currentName = String(fam.id);
+      const versions = await api("GET", "/user/deck/configs/" + fam.id + "/versions");
+      document.getElementById("config-version").innerHTML = versions.map(v => `<option value="${v.id}">${v.major}.${v.minor}.${v.patch}</option>`).join("");
+      document.getElementById("config-version").value = config_id; currentVersion = String(config_id);
+    }
+  } catch (_) { /* pinned config may be gone; leave selects blank */ }
+}
 
 async function restorePlanDraft(content) {
   plan.config_id = content.config_id || null;
   plan.steps = content.steps || [];
   nextId = Math.max(0, ...plan.steps.map(s => s.id || 0)) + 1;
-  try { await loadConfigMeta(plan.config_id); } catch (_) {}
-  if (plan.config_id) {
-    try {
-      const detail = await api("GET", "/user/deck/configs/" + plan.config_id);
-      const mine = await api("GET", "/user/deck/configs/mine");
-      const fam = mine.find(x => x.name === detail.name);
-      if (fam) {
-        document.getElementById("config-name").value = fam.id; currentName = String(fam.id);
-        const versions = await api("GET", "/user/deck/configs/" + fam.id + "/versions");
-        document.getElementById("config-version").innerHTML = versions.map(v => `<option value="${v.id}">${v.major}.${v.minor}.${v.patch}</option>`).join("");
-        document.getElementById("config-version").value = plan.config_id; currentVersion = String(plan.config_id);
-      }
-    } catch (_) { /* pinned config may be gone; leave selects blank */ }
-  }
+  planBaseId = content.base_id || null;
+  document.getElementById("plan-name").value = content.name || "";
+  document.getElementById("btn-delete-plan").style.display = planBaseId ? "" : "none";
+  await setConfigSelects(plan.config_id);
   renderSteps();
 }
 
@@ -594,7 +682,133 @@ async function checkDraft() {
   };
 }
 
+// ---------- check (dry-run against the pinned config) ----------
+function renderCheck(r) {
+  const box = document.getElementById("check-result");
+  const color = r.status === "valid" ? "#0f6e56" : (r.status === "incomplete" ? "#b7791f" : "#a32d2d");
+  let summary;
+  if (r.status === "valid") {
+    summary = `all ${r.total} transfer(s) fit`;
+  } else if (r.status === "incomplete") {
+    summary = `${(r.incomplete || []).length} well(s) or transfer(s) still have no volume`;
+  } else {
+    const fe = r.first_error;
+    summary = fe
+      ? `fails at transfer ${fe.n} of ${r.total}: ${fe.message} &mdash; ${fe.n - 1} transfer(s) run before it`
+      : "invalid";
+  }
+  const incompleteList = (r.incomplete || []).map(x => `<li>${x}</li>`).join("");
+  const traceRows = (r.trace || []).map(e => {
+    const c = e.ok ? "#0f6e56" : "#a32d2d";
+    const isFirst = r.first_error && e.n === r.first_error.n;
+    const weight = isFirst ? "font-weight:600;" : "";
+    return `<div style="color:${c};${weight}">${e.n}. ${e.desc} &middot; ${e.amount} µL ${e.ok ? "✓" : "✗"}${e.error ? " &mdash; " + e.error : ""}</div>`;
+  }).join("");
+  box.innerHTML = `
+    <div style="margin-top:8px;padding:8px 12px;border-radius:6px;border:1px solid ${color};color:${color}">
+      <b>${r.status.toUpperCase()}</b> &middot; ${summary}
+      ${incompleteList ? `<ul style="margin:6px 0 0">${incompleteList}</ul>` : ""}
+    </div>
+    ${traceRows ? `<details style="margin-top:6px"${r.status === "invalid" ? " open" : ""}>
+      <summary class="muted" style="cursor:pointer">what happens (${r.total} transfer${r.total === 1 ? "" : "s"})</summary>
+      <div style="font-size:12px;max-height:260px;overflow:auto;margin-top:4px;font-family:monospace">${traceRows}</div>
+    </details>` : ""}`;
+}
+async function checkPlan() {
+  if (!plan.config_id) { msg("Pin a config first.", false); return; }
+  try { renderCheck(await api("POST", "/user/plans/check", { config_id: plan.config_id, steps: plan.steps })); }
+  catch (e) { msg(e.message, false); }
+}
+document.getElementById("btn-check").onclick = checkPlan;
+
+// ---------- plans (save / load / fork, mirrors configs) ----------
+async function loadPlanList() {
+  const mine = await api("GET", "/user/plans/mine");
+  document.getElementById("plan-load").innerHTML = `<option value="">— new plan —</option>` +
+    mine.map(p => `<option value="${p.id}">${p.name} v${p.major}.${p.minor}.${p.patch}</option>`).join("");
+}
+
+async function setPlanHeritage(p) {
+  const ver = `${p.major}.${p.minor}.${p.patch}`;
+  const isMine = p.owner_name === ME;
+  let isHead = false;
+  if (isMine) {
+    const mine = await api("GET", "/user/plans/mine");
+    const head = mine.find(x => x.name === p.name);
+    isHead = !!(head && head.id === p.id);
+  }
+  const h = document.getElementById("plan-heritage");
+  if (isMine && isHead) {
+    h.className = "muted"; h.innerHTML = `Editing <b>${p.name}</b> v${ver}. Saving bumps the version automatically.`;
+  } else {
+    const src = isMine ? `an older version (v${ver})` : `<b>${p.owner_name}/${p.name}</b> v${ver}`;
+    h.className = "error"; h.innerHTML = `Saving forks a NEW plan from ${src}. Give it a new name.`;
+  }
+}
+
+async function loadPlan(id) {
+  const p = await api("GET", "/user/plans/" + id);
+  plan.config_id = p.config_id;
+  plan.steps = p.steps || [];
+  nextId = Math.max(0, ...plan.steps.map(s => s.id || 0)) + 1;
+  planBaseId = p.id;
+  document.getElementById("plan-name").value = p.name;
+  document.getElementById("btn-delete-plan").style.display = "";
+  document.getElementById("editor").style.display = "none";
+  await setConfigSelects(p.config_id);
+  await setPlanHeritage(p);
+  renderSteps();
+}
+
+function newPlan() {
+  plan.config_id = null; plan.steps = []; planBaseId = null;
+  cfg = null; substances = []; corePlates = [];
+  document.getElementById("plan-name").value = "";
+  document.getElementById("plan-heritage").innerHTML = "";
+  document.getElementById("btn-delete-plan").style.display = "none";
+  document.getElementById("config-name").value = ""; currentName = "";
+  document.getElementById("config-version").innerHTML = `<option value="">—</option>`; currentVersion = "";
+  document.getElementById("editor").style.display = "none";
+  renderSteps();
+}
+
+async function savePlan() {
+  const name = document.getElementById("plan-name").value.trim();
+  if (!name) { msg("Give the plan a name.", false); return; }
+  if (!plan.config_id) { msg("Pin a config first.", false); return; }
+  try {
+    const res = await api("POST", "/user/plans", { name, config_id: plan.config_id, steps: plan.steps, base_id: planBaseId });
+    try { await api("DELETE", "/user/draft/plan"); } catch (_) {}
+    msg(`Saved ${name} v${res.version}.`, true);
+    await loadPlanList();
+    document.getElementById("plan-load").value = res.id;
+    await loadPlan(res.id);
+  } catch (e) { msg(e.message, false); }
+}
+
+document.getElementById("btn-save-plan").onclick = savePlan;
+document.getElementById("btn-delete-plan").onclick = async () => {
+  if (!planBaseId || !confirm("Delete this plan version?")) return;
+  try { await api("DELETE", "/user/plans/" + planBaseId); msg("Deleted.", true); newPlan(); await loadPlanList(); }
+  catch (e) { msg(e.message, false); }
+};
+document.getElementById("plan-load").onchange = async e => {
+  const id = e.target.value;
+  if (plan.steps.length && !confirm("Load replaces the current plan. Continue?")) { e.target.value = planBaseId || ""; return; }
+  if (!id) { newPlan(); return; }
+  await loadPlan(Number(id)).catch(err => msg(err.message, false));
+};
+
 renderSteps();
-loadConfigs().then(checkDraft).catch(e => msg(e.message, false));
+(async () => {
+  try {
+    await loadMethods();
+    await loadConfigs();
+    await loadPlanList();
+    const params = new URLSearchParams(location.search);
+    if (params.get("edit")) await loadPlan(Number(params.get("edit")));
+    else await checkDraft();
+  } catch (e) { msg(e.message, false); }
+})();
 </script>
 {% endblock %}

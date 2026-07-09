@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Methods{% endblock %}
+{% block body %}
+  {% include "admin/_tabs.html" %}
+
+  <div id="msg"></div>
+
+  <section>
+    <h2>Liquid-handling methods</h2>
+    <p class="muted">Methods map to driver functions in the drivers repo. <code>basic_liquid_transfer</code>
+    is the default and is always available. Add others only after reviewing the driver code. For each
+    method, publish its hyperparameters — a name, optional units, and optional min/max — which become
+    fillable fields for manual users when they select that method on a step.</p>
+    <table id="methods-table">
+      <thead><tr><th>Method</th><th>Hyperparameters</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Add or update a method</h2>
+    <label>Driver method name <input id="m-name" placeholder="advanced_liquid_transfer"></label>
+    <table id="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Units</th><th>Min</th><th>Max</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <button id="btn-add-param" class="small">+ hyperparameter</button>
+    <button id="btn-save-method" class="small">Save method</button>
+    <p class="muted" style="font-size:12px">Saving an existing name replaces its hyperparameter spec.</p>
+  </section>
+
+<style>
+  section { margin: 1.5rem 0; }
+  #methods-table td, #methods-table th, #param-table td, #param-table th { padding: 6px 10px; text-align: left; }
+  button.small { font-size: 12px; }
+  button.danger { color: #a32d2d; }
+  #msg .error { color: #a32d2d; } #msg .ok { color: #0f6e56; }
+  #param-table input { width: 100px; }
+</style>
+
+<script>
+function msg(t, ok) { document.getElementById("msg").innerHTML = t ? `<p class="${ok ? "ok" : "error"}">${t}</p>` : ""; }
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let d = null; try { d = await r.json(); } catch (_) {}
+  if (!r.ok) {
+    let detail = (d && (d.detail || d.error)) || `HTTP ${r.status}`;
+    if (Array.isArray(detail)) detail = detail.map(x => x.msg || JSON.stringify(x)).join("; ");
+    throw new Error(detail);
+  }
+  return d;
+}
+
+const DEFAULT_METHOD = "basic_liquid_transfer";
+let params = [];
+
+function paramSummary(ps) {
+  if (!ps.length) return "(none)";
+  return ps.map(p => `${p.name}:${p.dtype ?? "float"}` + (p.units ? ` ${p.units}` : "")
+    + (p.min != null || p.max != null ? ` [${p.min ?? ""}..${p.max ?? ""}]` : "")).join(", ");
+}
+
+async function loadMethods() {
+  const list = await api("GET", "/user/methods");
+  document.querySelector("#methods-table tbody").innerHTML = list.map(m => {
+    const del = m.name === DEFAULT_METHOD ? "" : `<button class="small danger" data-del="${m.name}">remove</button>`;
+    return `<tr><td><code>${m.name}</code></td><td class="muted">${paramSummary(m.params)}</td><td>${del}</td></tr>`;
+  }).join("");
+}
+
+function renderParams() {
+  document.querySelector("#param-table tbody").innerHTML = params.map((p, i) => `
+    <tr>
+      <td><input data-pf="name" data-i="${i}" value="${p.name ?? ""}" placeholder="airgap"></td>
+      <td><select data-pf="dtype" data-i="${i}">
+        <option value="float" ${(p.dtype ?? "float") === "float" ? "selected" : ""}>float</option>
+        <option value="int" ${p.dtype === "int" ? "selected" : ""}>int</option>
+        <option value="bool" ${p.dtype === "bool" ? "selected" : ""}>bool</option>
+      </select></td>
+      <td><input data-pf="units" data-i="${i}" value="${p.units ?? ""}" placeholder="µL"></td>
+      <td><input data-pf="min" data-i="${i}" type="number" value="${p.min ?? ""}"></td>
+      <td><input data-pf="max" data-i="${i}" type="number" value="${p.max ?? ""}"></td>
+      <td><button class="small danger" data-delp="${i}">remove</button></td>
+    </tr>`).join("");
+}
+
+function onParamEdit(e) {
+  const f = e.target.dataset.pf; if (f === undefined) return;
+  const i = Number(e.target.dataset.i), v = e.target.value;
+  if (f === "min" || f === "max") params[i][f] = v === "" ? null : Number(v);
+  else if (f === "dtype") params[i].dtype = v;
+  else params[i][f] = v === "" ? null : v;
+}
+document.getElementById("param-table").addEventListener("input", onParamEdit);
+document.getElementById("param-table").addEventListener("change", onParamEdit);
+document.getElementById("param-table").addEventListener("click", e => {
+  if (e.target.dataset.delp === undefined) return;
+  params.splice(Number(e.target.dataset.delp), 1); renderParams();
+});
+document.getElementById("btn-add-param").onclick = () => { params.push({ name: "", dtype: "float", units: null, min: null, max: null }); renderParams(); };
+
+document.getElementById("btn-save-method").onclick = async () => {
+  const name = document.getElementById("m-name").value.trim();
+  if (!name) { msg("Enter the driver method name.", false); return; }
+  if (params.some(p => !p.name)) { msg("Every hyperparameter needs a name.", false); return; }
+  try {
+    await api("POST", "/user/methods", { name, params });
+    msg(`Saved ${name}.`, true);
+    document.getElementById("m-name").value = ""; params = []; renderParams();
+    await loadMethods();
+  } catch (e) { msg(e.message, false); }
+};
+
+document.querySelector("#methods-table").addEventListener("click", async e => {
+  const name = e.target.dataset.del; if (!name) return;
+  if (!confirm(`Remove ${name}? Plans that selected it will fall back to the default on edit.`)) return;
+  try { await api("DELETE", "/user/methods/" + encodeURIComponent(name)); await loadMethods(); }
+  catch (err) { msg(err.message, false); }
+});
+
+renderParams();
+loadMethods().catch(e => msg(e.message, false));
+</script>
+{% endblock %}

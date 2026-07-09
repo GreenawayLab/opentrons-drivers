@@ -153,6 +153,55 @@ CREATE TABLE user_permissions (
     CONSTRAINT user_permissions_pkey PRIMARY KEY (user_id, permission)
 );
 
+-- ============================== methods ==============================
+
+-- Liquid-handling methods a manual user may select per step. These map to
+-- driver functions in the drivers repo (LIQUID_METHODS), so exposing one is an
+-- admin decision after reviewing the code, not an auto-discovered list. params
+-- is the hyperparameter spec the admin publishes: a list of
+-- {name, units?, min?, max?} the frontend renders as fillable fields.
+-- basic_liquid_transfer has no hyperparameters and is the universal default,
+-- seeded here so it is always available regardless of admin action.
+CREATE TABLE methods (
+    name        TEXT        PRIMARY KEY,
+    params      JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    created_by  BIGINT      CONSTRAINT methods_created_by_fkey REFERENCES users (id),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO methods (name, params) VALUES ('basic_liquid_transfer', '[]'::jsonb);
+
+
+-- ============================== action_plans ==============================
+
+-- A protocol plan: an ordered list of steps pinned to one deck config version.
+-- Same versioned/owned/heritage shape as deck_configs. steps is the plan wire
+-- format (the same shape the actions editor serializes as a draft): a list of
+-- add_stock / move_core step envelopes. Versions are semver, auto-classified on
+-- save: major = the step set and what each step does, minor = order and methods,
+-- patch = volumes. Pinned config_id is a specific deck_configs row, so the plan
+-- borrows that version's plates and substances.
+CREATE TABLE action_plans (
+    id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner              BIGINT      NOT NULL
+                       CONSTRAINT action_plans_owner_fkey REFERENCES users (id),
+    name               TEXT        NOT NULL,
+    major              INTEGER     NOT NULL,
+    minor              INTEGER     NOT NULL,
+    patch              INTEGER     NOT NULL,
+    config_id          BIGINT      NOT NULL
+                       CONSTRAINT action_plans_config_fkey REFERENCES deck_configs (id),
+    steps              JSONB       NOT NULL,
+    origin_owner_name  TEXT,
+    origin_name        TEXT,
+    origin_major       INTEGER,
+    origin_minor       INTEGER,
+    origin_patch       INTEGER,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT action_plans_family_version_key UNIQUE (owner, name, major, minor, patch)
+);
+
+
 -- ============================== drafts ==============================
 
 -- Unsaved editor state. Deliberately dumb: a JSONB blob with NO validation, NO

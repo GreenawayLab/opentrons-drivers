@@ -23,7 +23,8 @@ Known v1 gaps (flagged, not silently approximated):
     * Stock is tracked as a per-substance total; multi-well stocks with
       per-well aspiration limits are not modelled (fine for single-well stocks).
     * ``min_residual`` is not in ``BaseConfig`` (a runtime concern), so it is 0.
-    * Well existence is not validated (needs the labware JSON well list).
+    * Well existence is not validated here; the editor only offers wells the
+      labware definition declares, so steps reference real wells by construction.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from protocol_model import (
+from opentrons_control.backend.app.protocol_model import (
     BaseConfig,
     ManualProtocol,
     SimReport,
@@ -39,7 +40,6 @@ from protocol_model import (
     StepVerdict,
 )
 
-_ROWS = "ABCDEFGH"
 
 
 def _is_tiprack(name: str) -> bool:
@@ -86,25 +86,18 @@ class SimState:
 
 
 def _expand_wells(ref: str) -> list[str]:
-    """Expand a well ref into a list of labels.
+    """Return the wells a receiver ref denotes.
 
-    Accepts a single label (``"A1"``) or a rectangular range (``"B1:B6"``,
-    ``"A1:H12"``), filling the rectangle between the two corners.
-
-    :param ref: Well label or ``start:end`` range.
-    :raises SimError: On a malformed label.
+    The simulator consumes atomic single-well transfers. Well selection and any
+    rectangular expansion happen upstream (the editor grid is sized from the
+    labware definition, so it knows the real rows and columns; the generator
+    emits one transfer per well). A range reaching here means a producer skipped
+    that expansion, so it is a hard error rather than a guess against an assumed
+    grid.
     """
-    if ":" not in ref:
-        return [ref]
-    start, end = ref.split(":", 1)
-    try:
-        r0, c0 = _ROWS.index(start[0]), int(start[1:])
-        r1, c1 = _ROWS.index(end[0]), int(end[1:])
-    except (ValueError, IndexError):
-        raise SimError(f"bad well range '{ref}'")
-    rows = range(min(r0, r1), max(r0, r1) + 1)
-    cols = range(min(c0, c1), max(c0, c1) + 1)
-    return [f"{_ROWS[r]}{c}" for r in rows for c in cols]
+    if ":" in ref:
+        raise SimError(f"well range '{ref}' must be expanded before the simulator")
+    return [ref]
 
 
 def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) -> None:

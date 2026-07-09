@@ -1,0 +1,1 @@
+DELETE FROM methods WHERE name = :name;

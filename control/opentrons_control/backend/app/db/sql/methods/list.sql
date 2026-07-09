@@ -1,0 +1,1 @@
+SELECT name, params FROM methods ORDER BY name;

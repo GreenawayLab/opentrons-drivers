@@ -1,0 +1,1 @@
+DELETE FROM action_plans WHERE id = :id;

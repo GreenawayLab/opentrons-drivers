@@ -297,6 +297,14 @@ async def _render_updates(
     )
 
 
+@app.get("/admin/methods", response_class=HTMLResponse)
+async def admin_methods(request: Request) -> Response:
+    user, redirect = await _admin_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "admin/methods.html", {"user": user})
+
+
 @app.get("/admin/updates", response_class=HTMLResponse)
 async def updates_page(request: Request) -> Response:
     user, redirect = await _admin_or_redirect(request)
@@ -479,6 +487,72 @@ async def draft_get(request: Request, kind: str) -> Response:
 @app.delete("/user/draft/{kind}")
 async def draft_delete(request: Request, kind: str) -> Response:
     r = await call_backend(request, "DELETE", f"/api/user/draft/{kind}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/methods")
+async def methods_list(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/methods")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/methods")
+async def methods_save(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/methods", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/methods/{name}")
+async def methods_delete(request: Request, name: str) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/methods/{name}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/plans/mine")
+async def plans_mine(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/plans/mine")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/plans/others")
+async def plans_others(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/plans/others")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/plans/{plan_id}/versions")
+async def plans_versions(request: Request, plan_id: int) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/plans/{plan_id}/versions")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/plans/{plan_id}")
+async def plans_get(request: Request, plan_id: int) -> Response:
+    r = await call_backend(request, "GET", f"/api/user/plans/{plan_id}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/plans/check")
+async def plans_check(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/plans/check", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/plans")
+async def plans_save(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/api/user/plans/", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/plans/{plan_id}/family")
+async def plans_delete_family(request: Request, plan_id: int) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/plans/{plan_id}/family")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.delete("/user/plans/{plan_id}")
+async def plans_delete_version(request: Request, plan_id: int) -> Response:
+    r = await call_backend(request, "DELETE", f"/api/user/plans/{plan_id}")
     return JSONResponse(r.json(), status_code=r.status_code)
 
 

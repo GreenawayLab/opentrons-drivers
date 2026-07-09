@@ -13,8 +13,11 @@ user-gated majority.
 
 from fastapi import APIRouter
 
+from opentrons_control.backend.app.routers import method, plan
 from opentrons_control.backend.app.routers import deck, draft
 
 router = APIRouter(prefix="/api/user")
 router.include_router(deck.router)
 router.include_router(draft.router)
+router.include_router(plan.router)
+router.include_router(method.router)

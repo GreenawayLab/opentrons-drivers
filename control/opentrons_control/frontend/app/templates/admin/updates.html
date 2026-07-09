@@ -1,13 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Driver updates{% endblock %}
 {% block body %}
-  <div class="bar">
-    <h1>Driver updates</h1>
-    <div class="nav">
-      <a href="/admin/dashboard">Robots</a>
-      <form method="post" action="/logout"><button>Log out ({{ user.name }})</button></form>
-    </div>
-  </div>
+  {% include "admin/_tabs.html" %}
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% if build_result %}<p class="ok">Built version {{ build_result }} and stored it.</p>{% endif %}
