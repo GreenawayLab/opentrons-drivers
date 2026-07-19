@@ -14,6 +14,7 @@
     <h2>Config</h2>
     <div id="heritage" class="muted"></div>
     <label>Name <input id="config-name" placeholder="screening"></label>
+    <label>Change note <input id="config-desc" placeholder="what changed (optional)" style="width:280px"></label>
     <button id="btn-save">Save config</button>
     <button id="btn-save-draft">Save as draft</button>
     <div id="save-err" class="error"></div>
@@ -24,6 +25,11 @@
     <h2>Pipettes</h2>
     <label>Left mount <input id="pip-left" list="pipette-models" placeholder="p300_single_gen2"></label>
     <label>Right mount <input id="pip-right" list="pipette-models" placeholder="(optional)"></label>
+  </section>
+
+  <section>
+    <h2>Deck layout</h2>
+    <div id="deck-viz"></div>
   </section>
 
   <section>
@@ -168,11 +174,43 @@ function plateCard(p, kind, idx) {
     ${isFile ? contentRows(p, kind, idx) : `<p class="muted no-content">Modules have no wells to fill.</p>`}
   </div>`;
 }
+function renderDeck() {
+  const esc = s => String(s).replace(/[<>&]/g, ch => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
+  const bySlot = {};
+  (state.core || []).forEach(p => { if (String(p.place).trim()) bySlot[String(p.place).trim()] = { ...p, role: "core" }; });
+  (state.stock || []).forEach(p => { if (String(p.place).trim()) bySlot[String(p.place).trim()] = { ...p, role: "stock" }; });
+  const W = 104, H = 62, GAP = 8;
+  let cells = "";
+  for (let n = 1; n <= 12; n++) {
+    const col = (n - 1) % 3, row = Math.floor((n - 1) / 3);
+    const x = col * (W + GAP), y = (3 - row) * (H + GAP);
+    if (n === 12) {
+      cells += `<rect x="${x}" y="${y}" width="${W}" height="${H}" rx="4" fill="#f4f4f4" stroke="#ddd"/>`
+             + `<text x="${x + W / 2}" y="${y + H / 2}" text-anchor="middle" dominant-baseline="middle" font-size="11" fill="#aaa">trash</text>`;
+      continue;
+    }
+    const pl = bySlot[String(n)];
+    const fill = pl ? (pl.role === "core" ? "#dbeafe" : "#dcfce7") : "#fafafa";
+    const stroke = pl ? (pl.role === "core" ? "#3b82f6" : "#22c55e") : "#e5e5e5";
+    cells += `<rect x="${x}" y="${y}" width="${W}" height="${H}" rx="4" fill="${fill}" stroke="${stroke}"/>`
+           + `<text x="${x + 5}" y="${y + 13}" font-size="9" fill="#bbb">${n}</text>`;
+    if (pl) {
+      cells += `<text x="${x + W / 2}" y="${y + H / 2 - 3}" text-anchor="middle" font-size="11" fill="#333">${esc((pl.name || "").slice(0, 14))}</text>`
+             + `<text x="${x + W / 2}" y="${y + H / 2 + 11}" text-anchor="middle" font-size="8" fill="#888">${esc((pl.type || "").replace(".json", "").slice(0, 16))}</text>`;
+    }
+  }
+  const svgW = 3 * (W + GAP) - GAP, svgH = 4 * (H + GAP) - GAP;
+  document.getElementById("deck-viz").innerHTML =
+    `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${cells}</svg>`
+    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp; slot numbers match the OT-2 deck</div>`;
+}
+
 function renderPlates() {
   document.getElementById("core-plates").innerHTML =
     state.core.map((p, i) => plateCard(p, "core", i)).join("") || `<p class="muted">No core plates.</p>`;
   document.getElementById("stock-plates").innerHTML =
     state.stock.map((p, i) => plateCard(p, "stock", i)).join("") || `<p class="muted">No stock plates.</p>`;
+  renderDeck();
 }
 function newPlate(kind) {
   const base = { name: "", type: "", place: "", offset: { x: 0, y: 0, z: 0 }, content: [], wells: [], capacity: null };
@@ -195,6 +233,7 @@ function onFieldEdit(e) {
     else if (field === "offz") p.offset.z = e.target.value;
     else p[field] = e.target.value;
     if (field === "type" && e.type === "change") applyLabwareDef(p, e.target.value);
+    if (["place", "name", "type"].includes(field)) renderDeck();
   } else if (c) {
     const [kind, idx, ci, field] = c.split(":");
     (kind === "core" ? state.core : state.stock)[idx].content[ci][field] = e.target.value;
@@ -280,7 +319,7 @@ async function saveConfig() {
   // base_id is the version this edit derives from. The backend bumps if it is the
   // family head, otherwise forks a new family. A blank new config sends null.
   try {
-    await api("POST", "/configs", { name, config: cfg, base_id: baseId });
+    await api("POST", "/configs", { name, config: cfg, base_id: baseId, description: document.getElementById("config-desc").value || null });
     try { await draftReq("DELETE"); } catch (_) {}
     window.location.href = "/user/configs";
   } catch (e) {

@@ -112,6 +112,7 @@ class ConfigDetail(BaseModel):
     minor: int
     patch: int
     config: BaseConfig
+    description: str | None
     origin_owner_name: str | None
     origin_name: str | None
     origin_major: int | None
@@ -124,6 +125,7 @@ class VersionInfo(BaseModel):
     major: int
     minor: int
     patch: int
+    description: str | None = None
     created_at: Any
 
 
@@ -131,6 +133,7 @@ class SaveConfigRequest(BaseModel):
     name: str
     config: BaseConfig
     base_id: int | None = None
+    description: str | None = None
 
 
 class StandardUnitInfo(BaseModel):
@@ -280,7 +283,7 @@ def get_config(
     return ConfigDetail(
         id=row["id"], owner=row["owner"], owner_name=row["owner_name"],
         name=row["name"], major=row["major"], minor=row["minor"], patch=row["patch"],
-        config=BaseConfig.model_validate(row["config"]),
+        config=BaseConfig.model_validate(row["config"]), description=row.get("description"),
         origin_owner_name=row["origin_owner_name"], origin_name=row["origin_name"],
         origin_major=row["origin_major"], origin_minor=row["origin_minor"], origin_patch=row["origin_patch"],
     )
@@ -387,7 +390,7 @@ def save_config(
         {
             "owner": user.id, "name": req.name,
             "major": version[0], "minor": version[1], "patch": version[2],
-            "config": req.config.model_dump_json(),
+            "config": req.config.model_dump_json(), "description": req.description,
             "origin_owner_name": origin[0], "origin_name": origin[1],
             "origin_major": origin[2], "origin_minor": origin[3], "origin_patch": origin[4],
         },

@@ -38,28 +38,34 @@ def plan_to_protocol(
     steps: list[dict[str, Any]],
     name: str = "check",
     drivers_version: str = "check",
-) -> tuple[ManualProtocol, list[str]]:
+) -> tuple[ManualProtocol, list[str], list[str]]:
     """Expand plan steps into a transfer_execution protocol plus incomplete notes.
 
     :param config: The pinned deck config (plates, stock content, capacities).
     :param steps: The plan's ordered step envelopes (add_stock or move_core).
-    :returns: A ManualProtocol of atomic transfers, and a list of human-readable
-        notes for wells or edges that have no volume yet (the incomplete set).
+    :returns: A ManualProtocol of atomic transfers, a list of incomplete notes
+        (wells or transfers with no substance or volume yet), and a list of hard
+        generation errors (a fill_to below the well's current volume).
     """
     core = _seed_core(config)
     out: list[Step] = []
     incomplete: list[str] = []
+    errors: list[str] = []
 
     for i, step in enumerate(steps):
         kind = step.get("kind")
 
         if kind == "add_stock":
-            substance = step.get("substance")
             plate = step.get("dest_plate")
-            vols = step.get("volumes") or {}
+            assignments = step.get("assignments") or {}
             running = core.setdefault(plate, {})
             for well in step.get("wells") or []:
-                cell = vols.get(well)
+                a = assignments.get(well) or {}
+                substance = a.get("substance")
+                cell = a.get("volume")
+                if not substance:
+                    incomplete.append(f"step {i + 1}: {plate}/{well} has no substance")
+                    continue
                 if cell is None:
                     incomplete.append(f"step {i + 1}: {plate}/{well} has no volume")
                     continue
@@ -68,7 +74,14 @@ def plan_to_protocol(
                     if target is None:
                         incomplete.append(f"step {i + 1}: {plate}/{well} fill_to has no target")
                         continue
-                    amount = float(target) - running.get(well, 0.0)
+                    current = running.get(well, 0.0)
+                    amount = float(target) - current
+                    if amount < 0:
+                        errors.append(
+                            f"step {i + 1}: fill_to {float(target):g} µL in {plate}/{well} is below its "
+                            f"current {current:g} µL, so it would need to remove liquid"
+                        )
+                        continue
                 else:
                     amount = float(cell.get("value") if isinstance(cell, dict) else cell)
                 out.append(Step(
@@ -96,4 +109,4 @@ def plan_to_protocol(
                 r_running[dst] = r_running.get(dst, 0.0) + amount
                 s_running[src] = s_running.get(src, 0.0) - amount
 
-    return ManualProtocol(name=name, drivers_version=drivers_version, config=config, steps=out), incomplete
+    return ManualProtocol(name=name, drivers_version=drivers_version, config=config, steps=out), incomplete, errors

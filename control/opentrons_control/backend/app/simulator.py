@@ -56,12 +56,12 @@ class SimState:
     """Mutable bookkeeping state threaded through a dry run.
 
     :param stocks: Substance to current µL (summed across its stock wells).
-    :param core: ``plate -> well -> current µL``.
+    :param core: ``plate -> well -> {substance -> current µL}`` (composition).
     :param cap: ``plate -> per-well capacity µL or None``.
     """
 
     stocks: dict[str, float]
-    core: dict[str, dict[str, float]]
+    core: dict[str, dict[str, dict[str, float]]]
     cap: dict[str, float | None] = field(default_factory=dict)
 
     @classmethod
@@ -74,12 +74,12 @@ class SimState:
             for cell in plate.content.values():
                 stocks[cell.substance] = stocks.get(cell.substance, 0.0) + cell.volume
 
-        core: dict[str, dict[str, float]] = {}
+        core: dict[str, dict[str, dict[str, float]]] = {}
         cap: dict[str, float | None] = {}
         for name, plate in config.core_plates.items():
             if _is_tiprack(name):
                 continue
-            core[name] = {w: c.volume for w, c in plate.content.items()}
+            core[name] = {w: {c.substance: c.volume} for w, c in plate.content.items()}
             cap[name] = plate.max_volume
 
         return cls(stocks=stocks, core=core, cap=cap)
@@ -98,6 +98,11 @@ def _expand_wells(ref: str) -> list[str]:
     if ":" in ref:
         raise SimError(f"well range '{ref}' must be expanded before the simulator")
     return [ref]
+
+
+def _well_total(comp: dict[str, float]) -> float:
+    """Total µL in a well across all substances."""
+    return sum(comp.values())
 
 
 def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) -> None:
@@ -131,7 +136,7 @@ def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) ->
 
     total = amount * len(dests)
 
-    # ---- source depletion ----
+    # ---- source depletion: work out the mix that lands in each destination ----
     if len(source) == 1:
         sub = source[0]
         if sub not in state.stocks:
@@ -143,18 +148,28 @@ def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) ->
             )
             return
         state.stocks[sub] -= total
+        per_well_mix = {sub: amount}
     elif len(source) == 2:
         s_plate, s_well = source
         if s_plate not in state.core:
             v.errors.append(f"unknown core plate '{s_plate}'")
             return
-        have = state.core[s_plate].get(s_well, 0.0)
+        src_comp = state.core[s_plate].get(s_well, {})
+        have = _well_total(src_comp)
         if have < total:
             v.errors.append(
                 f"{s_plate}·{s_well} short: need {total:g} µL, have {have:g} µL"
             )
             return
-        state.core[s_plate][s_well] = have - total
+        # a well aspiration removes each substance in proportion to its share,
+        # so the moved liquid carries the source well's composition
+        frac = total / have
+        removed: dict[str, float] = {}
+        for sub_name, vol in list(src_comp.items()):
+            take = vol * frac
+            src_comp[sub_name] = vol - take
+            removed[sub_name] = take
+        per_well_mix = {sub_name: vol / len(dests) for sub_name, vol in removed.items()}
     else:
         v.errors.append("source must be [substance] or [plate, well]")
         return
@@ -162,10 +177,12 @@ def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) ->
     # ---- destination fill + overfill check ----
     cap = state.cap.get(dst_plate)
     for well in dests:
-        new = state.core[dst_plate].get(well, 0.0) + amount
-        if cap is not None and new > cap:
-            v.errors.append(f"{dst_plate}·{well} overfills: {new:g} > {cap:g} µL")
-        state.core[dst_plate][well] = new
+        comp = state.core[dst_plate].setdefault(well, {})
+        for sub_name, vol in per_well_mix.items():
+            comp[sub_name] = comp.get(sub_name, 0.0) + vol
+        new_total = _well_total(comp)
+        if cap is not None and new_total > cap:
+            v.errors.append(f"{dst_plate}·{well} overfills: {new_total:g} > {cap:g} µL")
 
 
 _ACCOUNTERS = {

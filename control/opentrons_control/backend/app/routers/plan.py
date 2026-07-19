@@ -67,6 +67,7 @@ class PlanDetail(BaseModel):
     patch: int
     config_id: int
     steps: list[dict[str, Any]]
+    description: str | None
     origin_owner_name: str | None
     origin_name: str | None
     origin_major: int | None
@@ -79,6 +80,7 @@ class VersionInfo(BaseModel):
     major: int
     minor: int
     patch: int
+    description: str | None = None
     created_at: Any
 
 
@@ -87,6 +89,7 @@ class SavePlanRequest(BaseModel):
     config_id: int
     steps: list[dict[str, Any]]
     base_id: int | None = None
+    description: str | None = None
 
 
 class CheckPlanRequest(BaseModel):
@@ -151,7 +154,7 @@ def check_plan(
     if row is None:
         raise HTTPException(status_code=400, detail=f"unknown config {req.config_id}")
     config = BaseConfig.model_validate(row["config"])
-    protocol, incomplete = plan_to_protocol(config, req.steps)
+    protocol, incomplete, gen_errors = plan_to_protocol(config, req.steps)
     report = simulate(protocol)
 
     def _describe(ref: list) -> str:
@@ -175,15 +178,29 @@ def check_plan(
                 first_error = {"n": i + 1, "desc": desc, "amount": amount, "message": err}
         trace.append(entry)
 
+    # final per-well composition, empty wells omitted
+    final: dict[str, dict[str, Any]] = {}
+    for plate, wells in report.final_core.items():
+        for well, comp in wells.items():
+            tot = sum(comp.values())
+            if tot > 1e-9:
+                final.setdefault(plate, {})[well] = {
+                    "total": round(tot, 3),
+                    "composition": {s: round(vv, 3) for s, vv in comp.items() if vv > 1e-9},
+                }
+
     fail_count = sum(1 for e in trace if not e["ok"])
-    status = "incomplete" if incomplete else ("valid" if report.ok else "invalid")
+    ok = report.ok and not gen_errors
+    status = "incomplete" if incomplete else ("valid" if ok else "invalid")
     return {
         "status": status,
         "total": len(protocol.steps),
         "trace": trace,
         "first_error": first_error,
         "fail_count": fail_count,
+        "errors": gen_errors,
         "incomplete": incomplete,
+        "final": final,
     }
 
 
@@ -200,7 +217,7 @@ def get_plan(
     return PlanDetail(
         id=row["id"], owner=row["owner"], owner_name=row["owner_name"],
         name=row["name"], major=row["major"], minor=row["minor"], patch=row["patch"],
-        config_id=row["config_id"], steps=row["steps"],
+        config_id=row["config_id"], steps=row["steps"], description=row.get("description"),
         origin_owner_name=row["origin_owner_name"], origin_name=row["origin_name"],
         origin_major=row["origin_major"], origin_minor=row["origin_minor"], origin_patch=row["origin_patch"],
     )
@@ -282,7 +299,7 @@ def save_plan(
         {
             "owner": user.id, "name": req.name,
             "major": version[0], "minor": version[1], "patch": version[2],
-            "config_id": req.config_id, "steps": json.dumps(req.steps),
+            "config_id": req.config_id, "steps": json.dumps(req.steps), "description": req.description,
             "origin_owner_name": origin[0], "origin_name": origin[1],
             "origin_major": origin[2], "origin_minor": origin[3], "origin_patch": origin[4],
         },

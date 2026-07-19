@@ -88,7 +88,8 @@ async function showVersions(id) {
   document.getElementById("versions-panel").innerHTML =
     `<b>Version history</b><br>`
     + vs.map(v => `v${v.major}.${v.minor}.${v.patch} <a href="/user/deck?edit=${v.id}">load</a> `
-                + `<button class="small danger" data-delver="${v.id}">delete</button>`).join("<br>")
+                + `<button class="small danger" data-delver="${v.id}">delete</button>`
+                + (v.description ? ` <span class="muted">— ${v.description}</span>` : "")).join("<br>")
     + `<br><button class="small" data-closeversions="1">close</button>`;
 }
 

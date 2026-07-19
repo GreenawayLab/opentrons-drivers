@@ -106,18 +106,24 @@ def next_config_version(old: BaseConfig, new: BaseConfig, head: Version) -> Vers
 
 
 def _step_identity(step: dict) -> tuple:
-    """What a step is and does, independent of order and volumes."""
+    """What a step is and does, independent of order and volumes.
+
+    For add_stock the identity includes which substance is assigned to each
+    well, since a single step may now dispense different substances.
+    """
     kind = step.get("kind")
     if kind == "add_stock":
-        return (kind, step.get("substance"), step.get("dest_plate"),
-                tuple(sorted(step.get("wells", []))))
+        a = step.get("assignments") or {}
+        return (kind, step.get("dest_plate"),
+                tuple(sorted((w, (a.get(w) or {}).get("substance")) for w in step.get("wells", []))))
     return (kind, step.get("source_plate"), step.get("receiver_plate"),
             tuple(sorted((e.get("src"), e.get("dst")) for e in step.get("edges", []))))
 
 
 def _how_sig(step: dict) -> tuple:
-    how = step.get("how") or {}
-    return tuple(sorted(how.items()))
+    how = dict(step.get("how") or {})
+    params = how.pop("params", None) or {}
+    return (tuple(sorted(how.items())), tuple(sorted(params.items())))
 
 
 def _plan_identity_set(steps: list) -> list:
@@ -145,8 +151,8 @@ def _plan_volume_sig(steps: list) -> list:
     out: list = []
     for s in steps:
         if s.get("kind") == "add_stock":
-            vols = s.get("volumes") or {}
-            out.append(tuple(sorted((w, _cell_sig(c)) for w, c in vols.items())))
+            a = s.get("assignments") or {}
+            out.append(tuple(sorted((w, _cell_sig((a.get(w) or {}).get("volume"))) for w in s.get("wells", []))))
         else:
             out.append(tuple(e.get("volume") for e in s.get("edges", [])))
     return out

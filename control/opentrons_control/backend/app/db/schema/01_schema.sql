@@ -96,6 +96,7 @@ CREATE TABLE deck_configs (
     minor              INTEGER     NOT NULL,
     patch              INTEGER     NOT NULL,
     config             JSONB       NOT NULL,
+    description        TEXT,
     origin_owner_name  TEXT,
     origin_name        TEXT,
     origin_major       INTEGER,
@@ -192,6 +193,7 @@ CREATE TABLE action_plans (
     config_id          BIGINT      NOT NULL
                        CONSTRAINT action_plans_config_fkey REFERENCES deck_configs (id),
     steps              JSONB       NOT NULL,
+    description        TEXT,
     origin_owner_name  TEXT,
     origin_name        TEXT,
     origin_major       INTEGER,

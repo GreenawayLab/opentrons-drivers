@@ -15,6 +15,7 @@
     <div class="planbar">
       <label>Plan <input id="plan-name" placeholder="screening run"></label>
       <label>Load <select id="plan-load"><option value="">— new plan —</option></select></label>
+      <label>Note <input id="plan-desc" placeholder="what changed (optional)" style="width:220px"></label>
     </div>
     <div class="planbar-buttons">
       <button id="btn-check" class="small">Check</button>
@@ -23,6 +24,7 @@
       <button id="btn-delete-plan" class="small danger" style="display:none">Delete</button>
     </div>
     <div id="plan-heritage" class="muted"></div>
+    <div id="plan-versions"></div>
     <p class="muted" style="font-size:12px">Not saved automatically. Save the plan, or save a draft to keep work across reloads.</p>
   </section>
 
@@ -56,7 +58,6 @@
     <h3>Configure step <span id="edit-idx"></span> <span id="edit-pill"></span></h3>
 
     <div id="hdr-add" style="display:none">
-      <label>Substance <select id="edit-substance"></select></label>
       <label>Destination plate <select id="edit-plate"></select></label>
     </div>
     <div id="hdr-move" style="display:none">
@@ -68,13 +69,17 @@
 
     <!-- add_stock selection -->
     <div id="phase-add" style="display:none">
-      <div id="well-grid" class="grid"></div>
+      <details open>
+        <summary class="muted" style="cursor:pointer">Well grid</summary>
+        <div id="well-grid" class="grid"></div>
+      </details>
       <p class="muted"><b id="sel-count">0</b> wells selected &middot; click = one, Ctrl-click = toggle, Shift-click = rectangle</p>
     </div>
 
     <!-- move_core edge drawing -->
     <div id="phase-move" style="display:none">
-      <p class="muted"><span id="armed">Click a source well, then a receiver well, to link one transfer.</span></p>
+      <p class="muted"><span id="armed">Click a source well, then a receiver well, to link one transfer.</span>
+        <button id="btn-map-matching" class="small">map matching wells</button></p>
       <div class="two-grids">
         <div><b>Source</b><div id="src-grid" class="grid"></div></div>
         <div><b>Receiver</b><div id="dst-grid" class="grid"></div></div>
@@ -92,21 +97,24 @@
 
     <!-- shared volumes phase -->
     <div id="phase-vol" style="display:none">
-      <div id="vol-grid" class="grid"></div>
       <div class="fill-tools">
-        <label>Fill selected with
-          <select id="fill-method">
-            <option value="const">constant</option>
-            <option value="fillto">fill to total</option>
-            <option value="grid">paste</option>
-          </select>
-        </label>
-        <span id="fill-input"></span>
-        <button class="small" id="fill-apply">Apply</button>
-        <button class="small danger" id="fill-clear">Clear selected</button>
-        <div id="paste-note" class="muted"></div>
-        <div class="muted" style="font-size:11px">paste = a plate-shaped block, mapped by cell position from A1. Blanks kept, cells outside the target set ignored.</div>
+        <div>Substance <select id="as-substance"></select> <button class="small" id="as-apply-sub">apply to all</button></div>
+        <div style="margin-top:6px">Volume
+          <select id="as-volmode"><option value="const">constant</option><option value="fillto">fill to total</option></select>
+          <input id="as-volval" type="number" style="width:90px">
+          <button class="small" id="as-apply-vol">apply to all</button>
+          <button class="small danger" id="as-clear">clear volumes</button>
+        </div>
+        <div style="margin-top:6px">paste substance and volume per well, one per line, in row-major order
+          <textarea id="as-paste" rows="3" style="width:100%;display:block;margin:6px 0" placeholder="water&#9;100&#10;AETC&#9;50"></textarea>
+          <button class="small" id="as-paste-btn">apply paste</button>
+          <span id="as-note" class="muted"></span>
+        </div>
       </div>
+      <details open>
+        <summary class="muted" style="cursor:pointer">Per-well assignment</summary>
+        <table id="assign-table"><thead><tr><th>Well</th><th>Substance</th><th>µL</th></tr></thead><tbody></tbody></table>
+      </details>
     </div>
 
     <div id="how-section" class="how-section"></div>
@@ -170,17 +178,20 @@ let nextId = 1, cfg = null, substances = [], corePlates = [], planBaseId = null;
 const wellCache = {};
 
 function newStep(kind) {
-  const base = { id: nextId++, kind, volumes: {}, how: {} };
+  const base = { id: nextId++, kind, how: {} };
   return kind === "add_stock"
-    ? { ...base, substance: "", dest_plate: "", wells: [] }
+    ? { ...base, dest_plate: "", wells: [], assignments: {} }
     : { ...base, source_plate: "", receiver_plate: "", edges: [] };
 }
 function stepSummary(s) {
   if (s.kind === "add_stock") {
-    if (!s.substance && !s.dest_plate) return "not configured yet";
-    const miss = s.wells.filter(w => !s.volumes[w]).length;
-    return `${s.substance || "?"} &rarr; ${s.dest_plate || "?"} (${s.wells.length} wells`
-         + (miss ? `, <span style="color:#a32d2d">${miss} missing volume</span>` : "") + ")";
+    if (!s.dest_plate) return "not configured yet";
+    const a = s.assignments || {};
+    const subs = [...new Set(s.wells.map(w => (a[w] || {}).substance).filter(Boolean))];
+    const miss = s.wells.filter(w => { const x = a[w] || {}; return !x.substance || !x.volume; }).length;
+    const label = subs.length === 0 ? "?" : (subs.length === 1 ? subs[0] : `${subs.length} substances`);
+    return `${label} &rarr; ${s.dest_plate} (${s.wells.length} wells`
+         + (miss ? `, <span style="color:#a32d2d">${miss} incomplete</span>` : "") + ")";
   }
   if (!s.source_plate && !s.receiver_plate) return "not configured yet";
   const miss = s.edges.filter(e => e.volume == null).length;
@@ -241,17 +252,11 @@ let editStep = null, editMode = "select";
 let editGrid = null, editSel = new Set(), editAnchor = null;   // add_stock
 let srcGrid = null, dstGrid = null, armedSrc = null;           // move_core
 
-// what needs volumes, and on which grid, for the current step
-function volTargets() {
-  return editStep.kind === "add_stock" ? new Set(editStep.wells) : new Set(editStep.edges.map(e => e.dst));
-}
-function volGrid() { return editStep.kind === "add_stock" ? editGrid : dstGrid; }
-
 function renderModes() {
   const label = editStep.kind === "add_stock" ? "Select wells" : "Draw edges";
   document.getElementById("modes").innerHTML =
     `<button class="small ${editMode === "select" ? "on" : ""}" data-mode="select">${label}</button>
-     <button class="small ${editMode === "volumes" ? "on" : ""}" data-mode="volumes">Set volumes</button>`;
+     <button class="small ${editMode === "volumes" ? "on" : ""}" data-mode="volumes">Assign</button>`;
 }
 
 // methods and their hyperparameter specs come from the admin registry, never hardcoded
@@ -327,7 +332,7 @@ function renderEditor() {
     document.getElementById("phase-add").style.display = showSel ? "" : "none";
     document.getElementById("phase-vol").style.display = showSel ? "none" : "";
     document.getElementById("phase-move").style.display = "none";
-    if (showSel) renderWellGrid(); else { renderFillInput(); renderVolGrid(); }
+    if (showSel) renderWellGrid(); else renderAssign();
   } else {
     document.getElementById("phase-add").style.display = "none";
     document.getElementById("phase-vol").style.display = "none";
@@ -380,46 +385,55 @@ function renderMove() {
 }
 
 // ---------- shared volumes phase ----------
-function renderVolGrid() {
-  const box = document.getElementById("vol-grid");
-  const g = volGrid();
-  if (!g) { box.innerHTML = `<p class="muted">Configure the ${editStep.kind === "add_stock" ? "destination plate and wells" : "plates and transfers"} first.</p>`; return; }
-  const targets = volTargets(), vols = editStep.volumes;
-  box.innerHTML = gridHTML(g, w => {
-    if (!targets.has(w)) return `<span class="off">${w}</span>`;
-    const v = vols[w];
-    if (v && v.mode === "fill_to") return `<span class="fillto" title="${w}">&rarr;${v.target}</span>`;
-    return `<input class="vol" data-vw="${w}" type="number" value="${v ? v.value : ""}" placeholder="µL">`;
+function _wellKey(w) { const m = w.match(/^([A-Za-z]+)(\d+)$/); return m ? [m[1], +m[2]] : [w, 0]; }
+function sortedWells() {
+  return [...editStep.wells].sort((a, b) => {
+    const [ra, ca] = _wellKey(a), [rb, cb] = _wellKey(b);
+    return ra.localeCompare(rb) || ca - cb;
   });
 }
-function renderFillInput() {
-  const m = document.getElementById("fill-method").value;
-  const box = document.getElementById("fill-input");
-  if (m === "const" || m === "fillto")
-    box.innerHTML = `<input type="number" id="fill-val" placeholder="${m === "fillto" ? "total µL" : "µL"}" style="width:110px">`;
-  else
-    box.innerHTML = `<textarea id="fill-text" rows="3" style="display:block;width:100%;margin:6px 0" placeholder="paste numbers from Excel"></textarea>`;
-  document.getElementById("paste-note").textContent = "";
+
+// add_stock assignment: each selected well gets its own substance and volume
+function renderAssign() {
+  document.getElementById("as-substance").innerHTML =
+    `<option value="">—</option>` + substances.map(s => `<option>${s}</option>`).join("");
+  const rowFor = w => {
+    const a = editStep.assignments[w] || {};
+    const subOpts = `<option value="">—</option>`
+      + substances.map(s => `<option ${s === a.substance ? "selected" : ""}>${s}</option>`).join("");
+    let volCell;
+    if (a.volume && a.volume.mode === "fill_to")
+      volCell = `<span class="fillto">&rarr;${a.volume.target}</span> <button class="small" data-clearvol="${w}">×</button>`;
+    else
+      volCell = `<input type="number" class="as-vol" data-aw="${w}" value="${a.volume ? a.volume.value : ""}" placeholder="µL" style="width:76px">`;
+    return `<tr><td>${w}</td><td><select class="as-sub" data-aw="${w}">${subOpts}</select></td><td>${volCell}</td></tr>`;
+  };
+  document.querySelector("#assign-table tbody").innerHTML =
+    sortedWells().map(rowFor).join("") || `<tr><td colspan="3" class="muted">Select wells first.</td></tr>`;
 }
-function pasteBlock(text) {
-  const g = volGrid(), targets = volTargets();
-  const block = text.replace(/\r/g, "").replace(/\n+$/, "").split("\n").map(line => line.split(/[\t,]/));
-  let applied = 0, ignored = 0, outside = 0;
-  block.forEach((brow, r) => brow.forEach((cell, c) => {
-    const num = parseFloat(cell); if (isNaN(num)) return;
-    const row = g.rows[r], col = g.cols[c];
-    if (row === undefined || col === undefined) { outside++; return; }
-    const w = g.byRC[row + "-" + col];
-    if (!w) { outside++; return; }
-    if (targets.has(w)) { editStep.volumes[w] = { value: num }; applied++; }
-    else ignored++;
-  }));
-  const note = document.getElementById("paste-note");
-  note.textContent = `applied ${applied}` + (ignored ? `, ${ignored} outside target (ignored)` : "")
-                   + (outside ? `, ${outside} outside plate (ignored)` : "");
-  note.style.color = (ignored || outside) ? "#a32d2d" : "#0f6e56";
-  renderVolGrid();
+
+function applyAssignPaste(text) {
+  const wells = sortedWells();
+  const lines = text.replace(/\r/g, "").replace(/\n+$/, "").split("\n");
+  const note = document.getElementById("as-note");
+  if (lines.length !== wells.length) {
+    note.textContent = `${lines.length} line(s) but ${wells.length} well(s) selected — counts must match`;
+    note.style.color = "#a32d2d"; return;
+  }
+  let unknown = 0;
+  lines.forEach((line, i) => {
+    const parts = line.split(/[\t,]/).map(x => x.trim());
+    const sub = parts[0] || "", vol = parseFloat(parts[1]);
+    const w = wells[i];
+    editStep.assignments[w] = {};
+    if (sub) { editStep.assignments[w].substance = sub; if (!substances.includes(sub)) unknown++; }
+    if (!isNaN(vol)) editStep.assignments[w].volume = { value: vol };
+  });
+  note.textContent = `filled ${wells.length} well(s)` + (unknown ? `, ${unknown} unknown substance name(s)` : "");
+  note.style.color = unknown ? "#a32d2d" : "#0f6e56";
+  renderAssign();
 }
+
 
 // ---------- editor open ----------
 async function openEditor(step) {
@@ -428,8 +442,6 @@ async function openEditor(step) {
   editGrid = null; editSel = new Set(); editAnchor = null;
   srcGrid = null; dstGrid = null; armedSrc = null;
   if (step.kind === "add_stock") {
-    document.getElementById("edit-substance").innerHTML =
-      `<option value="">— pick —</option>` + substances.map(s => `<option ${s === step.substance ? "selected" : ""}>${s}</option>`).join("");
     document.getElementById("edit-plate").innerHTML =
       `<option value="">— pick —</option>` + corePlates.map(p => `<option value="${p.name}" ${p.name === step.dest_plate ? "selected" : ""}>${p.name}</option>`).join("");
     editSel = new Set(step.wells);
@@ -446,10 +458,9 @@ async function openEditor(step) {
 }
 
 // ---------- editor field handlers ----------
-document.getElementById("edit-substance").onchange = e => { if (editStep) editStep.substance = e.target.value; };
 document.getElementById("edit-plate").onchange = async e => {
   if (!editStep) return;
-  editStep.dest_plate = e.target.value; editStep.wells = []; editStep.volumes = {};
+  editStep.dest_plate = e.target.value; editStep.wells = []; editStep.assignments = {};
   editSel = new Set(); editAnchor = null; editGrid = null;
   const p = corePlates.find(p => p.name === e.target.value);
   if (p) { try { editGrid = await gridFor(p.type); } catch (err) { msg(err.message, false); } }
@@ -457,14 +468,14 @@ document.getElementById("edit-plate").onchange = async e => {
 };
 document.getElementById("edit-src").onchange = async e => {
   if (!editStep) return;
-  editStep.source_plate = e.target.value; editStep.edges = []; editStep.volumes = {}; armedSrc = null; srcGrid = null;
+  editStep.source_plate = e.target.value; editStep.edges = []; armedSrc = null; srcGrid = null;
   const p = corePlates.find(p => p.name === e.target.value);
   if (p) { try { srcGrid = await gridFor(p.type); } catch (err) { msg(err.message, false); } }
   renderEditor();
 };
 document.getElementById("edit-dst").onchange = async e => {
   if (!editStep) return;
-  editStep.receiver_plate = e.target.value; editStep.edges = []; editStep.volumes = {}; armedSrc = null; dstGrid = null;
+  editStep.receiver_plate = e.target.value; editStep.edges = []; armedSrc = null; dstGrid = null;
   const p = corePlates.find(p => p.name === e.target.value);
   if (p) { try { dstGrid = await gridFor(p.type); } catch (err) { msg(err.message, false); } }
   renderEditor();
@@ -480,7 +491,7 @@ document.getElementById("well-grid").addEventListener("click", e => {
   else if (e.ctrlKey || e.metaKey) { editSel.has(w) ? editSel.delete(w) : editSel.add(w); editAnchor = w; }
   else { editSel = new Set([w]); editAnchor = w; }
   editStep.wells = [...editSel];
-  for (const k of Object.keys(editStep.volumes)) if (!editSel.has(k)) delete editStep.volumes[k];
+  for (const k of Object.keys(editStep.assignments)) if (!editSel.has(k)) delete editStep.assignments[k];
   renderWellGrid();
 });
 
@@ -515,6 +526,17 @@ document.getElementById("mc-const-btn").onclick = () => {
   editStep.edges.forEach(e => e.volume = Number(v));
   renderMove();
 };
+document.getElementById("btn-map-matching").onclick = () => {
+  if (!editStep || !srcGrid || !dstGrid) { msg("Pick both plates first.", false); return; }
+  const dstWells = new Set(Object.values(dstGrid.byRC));
+  const existing = new Set(editStep.edges.map(e => e.src + ">" + e.dst));
+  let added = 0;
+  Object.values(srcGrid.byRC).forEach(w => {
+    if (dstWells.has(w) && !existing.has(w + ">" + w)) { editStep.edges.push({ src: w, dst: w, volume: null }); added++; }
+  });
+  if (!added) msg("No new matching wells to map.", false);
+  renderMove();
+};
 document.getElementById("mc-paste-btn").onclick = () => {
   if (!editStep) return;
   const values = document.getElementById("mc-paste").value.replace(/\r/g, "").split(/[\n\t,\s]+/).map(s => s.trim()).filter(s => s !== "").map(Number);
@@ -529,30 +551,47 @@ document.getElementById("mc-paste-btn").onclick = () => {
   renderMove();
 };
 
-// manual volume entry (shared vol grid)
-document.getElementById("vol-grid").addEventListener("input", e => {
-  const w = e.target.dataset.vw; if (!w || !editStep) return;
-  if (e.target.value === "") delete editStep.volumes[w];
-  else editStep.volumes[w] = { value: Number(e.target.value) };
+// per-row substance / volume edits
+document.getElementById("assign-table").addEventListener("change", e => {
+  const w = e.target.dataset.aw; if (!w || !editStep || !e.target.classList.contains("as-sub")) return;
+  editStep.assignments[w] = editStep.assignments[w] || {};
+  editStep.assignments[w].substance = e.target.value;
+});
+document.getElementById("assign-table").addEventListener("input", e => {
+  const w = e.target.dataset.aw; if (!w || !editStep || !e.target.classList.contains("as-vol")) return;
+  editStep.assignments[w] = editStep.assignments[w] || {};
+  if (e.target.value === "") delete editStep.assignments[w].volume;
+  else editStep.assignments[w].volume = { value: Number(e.target.value) };
+});
+document.getElementById("assign-table").addEventListener("click", e => {
+  const w = e.target.dataset.clearvol; if (!w || !editStep) return;
+  if (editStep.assignments[w]) delete editStep.assignments[w].volume;
+  renderAssign();
 });
 
-// fill tools (shared)
-document.getElementById("fill-method").onchange = renderFillInput;
-document.getElementById("fill-apply").onclick = () => {
-  if (!editStep) return;
-  const m = document.getElementById("fill-method").value, targets = volTargets();
-  if (m === "const" || m === "fillto") {
-    const v = document.getElementById("fill-val").value;
-    if (v === "") { msg(m === "fillto" ? "Enter a target." : "Enter a value.", false); return; }
-    targets.forEach(w => editStep.volumes[w] = m === "fillto" ? { mode: "fill_to", target: Number(v) } : { value: Number(v) });
-    renderVolGrid();
-  } else if (m === "grid") { pasteBlock(document.getElementById("fill-text").value); }
+// apply-to-all substance / volume, and paste
+document.getElementById("as-apply-sub").onclick = () => {
+  const sub = document.getElementById("as-substance").value;
+  if (!sub) { msg("Pick a substance.", false); return; }
+  editStep.wells.forEach(w => { editStep.assignments[w] = editStep.assignments[w] || {}; editStep.assignments[w].substance = sub; });
+  renderAssign();
 };
-document.getElementById("fill-clear").onclick = () => {
-  if (!editStep) return;
-  volTargets().forEach(w => delete editStep.volumes[w]);
-  renderVolGrid();
+document.getElementById("as-apply-vol").onclick = () => {
+  const mode = document.getElementById("as-volmode").value;
+  const val = document.getElementById("as-volval").value;
+  if (val === "") { msg("Enter a value.", false); return; }
+  editStep.wells.forEach(w => {
+    editStep.assignments[w] = editStep.assignments[w] || {};
+    editStep.assignments[w].volume = mode === "fillto" ? { mode: "fill_to", target: Number(val) } : { value: Number(val) };
+  });
+  renderAssign();
 };
+document.getElementById("as-clear").onclick = () => {
+  editStep.wells.forEach(w => { if (editStep.assignments[w]) delete editStep.assignments[w].volume; });
+  renderAssign();
+};
+document.getElementById("as-paste-btn").onclick = () => applyAssignPaste(document.getElementById("as-paste").value);
+
 document.getElementById("edit-done").onclick = () => {
   document.getElementById("editor").style.display = "none"; editStep = null; renderSteps();
 };
@@ -698,6 +737,11 @@ function renderCheck(r) {
       : "invalid";
   }
   const incompleteList = (r.incomplete || []).map(x => `<li>${x}</li>`).join("");
+  const finalRows = Object.entries(r.final || {}).flatMap(([plate, wells]) =>
+    Object.entries(wells).map(([well, info]) => {
+      const comp = Object.entries(info.composition).map(([s, v]) => `${s} ${v}`).join(", ");
+      return `<div>${plate}/${well}: <b>${info.total} µL</b>${comp ? ` &mdash; ${comp}` : ""}</div>`;
+    })).join("");
   const traceRows = (r.trace || []).map(e => {
     const c = e.ok ? "#0f6e56" : "#a32d2d";
     const isFirst = r.first_error && e.n === r.first_error.n;
@@ -712,6 +756,10 @@ function renderCheck(r) {
     ${traceRows ? `<details style="margin-top:6px"${r.status === "invalid" ? " open" : ""}>
       <summary class="muted" style="cursor:pointer">what happens (${r.total} transfer${r.total === 1 ? "" : "s"})</summary>
       <div style="font-size:12px;max-height:260px;overflow:auto;margin-top:4px;font-family:monospace">${traceRows}</div>
+    </details>` : ""}
+    ${finalRows ? `<details style="margin-top:6px">
+      <summary class="muted" style="cursor:pointer">final well contents</summary>
+      <div style="font-size:12px;max-height:260px;overflow:auto;margin-top:4px;font-family:monospace">${finalRows}</div>
     </details>` : ""}`;
 }
 async function checkPlan() {
@@ -746,6 +794,30 @@ async function setPlanHeritage(p) {
   }
 }
 
+async function loadPlanVersions(id) {
+  let vs = [];
+  try { vs = await api("GET", "/user/plans/" + id + "/versions"); } catch (_) {}
+  const box = document.getElementById("plan-versions");
+  box.innerHTML = vs.length
+    ? `<details style="margin:6px 0"><summary class="muted" style="cursor:pointer">version history (${vs.length})</summary>`
+      + vs.map(v => `<div style="font-size:12px">v${v.major}.${v.minor}.${v.patch} `
+          + `<button class="small" data-loadver="${v.id}">load</button> `
+          + `<button class="small danger" data-delver="${v.id}">delete</button>`
+          + (v.description ? ` <span class="muted">— ${v.description}</span>` : "") + `</div>`).join("")
+      + `</details>`
+    : "";
+}
+document.getElementById("plan-versions").addEventListener("click", async e => {
+  if (e.target.dataset.loadver) {
+    if (plan.steps.length && !confirm("Load replaces the current plan. Continue?")) return;
+    await loadPlan(Number(e.target.dataset.loadver)).catch(err => msg(err.message, false));
+  } else if (e.target.dataset.delver) {
+    if (!confirm("Delete this plan version?")) return;
+    try { await api("DELETE", "/user/plans/" + e.target.dataset.delver); msg("Deleted.", true); await loadPlanList(); if (planBaseId) await loadPlanVersions(planBaseId); }
+    catch (err) { msg(err.message, false); }
+  }
+});
+
 async function loadPlan(id) {
   const p = await api("GET", "/user/plans/" + id);
   plan.config_id = p.config_id;
@@ -757,6 +829,7 @@ async function loadPlan(id) {
   document.getElementById("editor").style.display = "none";
   await setConfigSelects(p.config_id);
   await setPlanHeritage(p);
+  await loadPlanVersions(p.id);
   renderSteps();
 }
 
@@ -765,6 +838,7 @@ function newPlan() {
   cfg = null; substances = []; corePlates = [];
   document.getElementById("plan-name").value = "";
   document.getElementById("plan-heritage").innerHTML = "";
+  document.getElementById("plan-versions").innerHTML = "";
   document.getElementById("btn-delete-plan").style.display = "none";
   document.getElementById("config-name").value = ""; currentName = "";
   document.getElementById("config-version").innerHTML = `<option value="">—</option>`; currentVersion = "";
@@ -777,7 +851,8 @@ async function savePlan() {
   if (!name) { msg("Give the plan a name.", false); return; }
   if (!plan.config_id) { msg("Pin a config first.", false); return; }
   try {
-    const res = await api("POST", "/user/plans", { name, config_id: plan.config_id, steps: plan.steps, base_id: planBaseId });
+    const res = await api("POST", "/user/plans", { name, config_id: plan.config_id, steps: plan.steps, base_id: planBaseId, description: document.getElementById("plan-desc").value || null });
+    document.getElementById("plan-desc").value = "";
     try { await api("DELETE", "/user/draft/plan"); } catch (_) {}
     msg(`Saved ${name} v${res.version}.`, true);
     await loadPlanList();

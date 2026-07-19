@@ -143,13 +143,13 @@ class SimReport(BaseModel):
     :param ok: True when every step is ok.
     :param verdicts: Per-step verdicts in execution order.
     :param final_stocks: Stock volumes (µL) per substance after the last step.
-    :param final_core: Core well volumes (µL) after the last step.
+    :param final_core: Per-well composition (substance -> µL) after the last step.
     """
 
     ok: bool
     verdicts: list[StepVerdict]
     final_stocks: dict[str, float]
-    final_core: dict[str, dict[str, float]]
+    final_core: dict[str, dict[str, dict[str, float]]]
 
 
 # ---------------------------------------------------------------------------
