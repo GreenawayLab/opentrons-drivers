@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from opentrons_control.backend.app.security import (
@@ -49,6 +49,7 @@ class PlanSummary(BaseModel):
     patch: int
     config_id: int
     created_at: Any
+    description: str | None = None
     owner_name: str | None = None
     origin_owner_name: str | None = None
     origin_name: str | None = None
@@ -89,7 +90,7 @@ class SavePlanRequest(BaseModel):
     config_id: int
     steps: list[dict[str, Any]]
     base_id: int | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=300)
 
 
 class CheckPlanRequest(BaseModel):

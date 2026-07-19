@@ -508,6 +508,12 @@ async def methods_delete(request: Request, name: str) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.get("/user/robots")
+async def robots_for_user(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/api/user/robots")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/user/plans/mine")
 async def plans_mine(request: Request) -> Response:
     r = await call_backend(request, "GET", "/api/user/plans/mine")

@@ -2,5 +2,55 @@
 {% block title %}Dashboard{% endblock %}
 {% block body %}
   {% include "user/_tabs.html" %}
-  <p class="muted">Nothing here yet.</p>
+
+  <div id="msg"></div>
+
+  <section>
+    <h2>Run a plan</h2>
+    <label>Robot <select id="run-robot"></select></label>
+    <label>Action plan <select id="run-plan"></select></label>
+    <button id="btn-run">Submit to robot</button>
+    <div id="run-status" style="margin-top:12px"></div>
+    <p class="muted" style="font-size:12px">Execution is not wired to hardware yet. This previews the run flow: pick a robot and a plan, submit, and watch the status.</p>
+  </section>
+
+<style>
+  section { margin: 1.5rem 0; }
+  section label { margin-right: 14px; }
+  #msg .error { color: #a32d2d; }
+  .proc { color: #b7791f; }
+</style>
+
+<script>
+async function api(method, path) {
+  const r = await fetch(path, { method });
+  let d = null; try { d = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((d && (d.detail || d.error)) || `HTTP ${r.status}`);
+  return d;
+}
+function msg(t) { document.getElementById("msg").innerHTML = t ? `<p class="error">${t}</p>` : ""; }
+
+async function loadRunOptions() {
+  const [robots, plans] = await Promise.all([api("GET", "/user/robots"), api("GET", "/user/plans/mine")]);
+  document.getElementById("run-robot").innerHTML = robots.length
+    ? robots.map(r => `<option value="${r.robot_id}" ${r.enabled ? "" : "disabled"}>${r.robot_id}${r.enabled ? "" : " (offline)"}</option>`).join("")
+    : `<option value="">no robots</option>`;
+  document.getElementById("run-plan").innerHTML = plans.length
+    ? plans.map(p => `<option value="${p.id}">${p.name} v${p.major}.${p.minor}.${p.patch}</option>`).join("")
+    : `<option value="">no plans</option>`;
+}
+
+document.getElementById("btn-run").onclick = () => {
+  const robot = document.getElementById("run-robot").value;
+  const planSel = document.getElementById("run-plan");
+  const planLabel = planSel.options[planSel.selectedIndex] ? planSel.options[planSel.selectedIndex].text : "";
+  if (!robot || !planSel.value) { msg("Pick a robot and a plan first."); return; }
+  msg("");
+  const s = document.getElementById("run-status");
+  s.innerHTML = `<span class="proc">Processing… submitting ${planLabel} to ${robot}</span>`;
+  // Placeholder: execution is not wired to hardware yet, so nothing is dispatched.
+};
+
+loadRunOptions().catch(e => msg(e.message));
+</script>
 {% endblock %}

@@ -34,7 +34,7 @@ import json
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from opentrons_control.backend.app.security import (
@@ -95,6 +95,7 @@ class ConfigSummary(BaseModel):
     minor: int
     patch: int
     created_at: Any
+    description: str | None = None
     owner_name: str | None = None
     origin_owner_name: str | None = None
     origin_name: str | None = None
@@ -133,7 +134,7 @@ class SaveConfigRequest(BaseModel):
     name: str
     config: BaseConfig
     base_id: int | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=300)
 
 
 class StandardUnitInfo(BaseModel):

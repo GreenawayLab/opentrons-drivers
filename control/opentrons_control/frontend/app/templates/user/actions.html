@@ -11,12 +11,30 @@
     <button class="small" id="draft-discard">Discard draft</button>
   </div>
 
+  <div id="plan-list-view">
+    <div class="bar">
+      <h2>My plans</h2>
+      <button id="btn-new-plan" class="btn-new">New plan</button>
+    </div>
+    <table id="plans-mine-table">
+      <thead><tr><th>Name</th><th>Version</th><th>Description</th><th>Heritage</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="plans-versions-panel"></div>
+    <h2>Other users' plans</h2>
+    <table id="plans-others-table">
+      <thead><tr><th>Owner</th><th>Name</th><th>Version</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div id="plan-editor-view" style="display:none">
+    <button id="btn-back-plans" class="small">&larr; back to plans</button>
   <section>
     <div class="planbar">
       <label>Plan <input id="plan-name" placeholder="screening run"></label>
-      <label>Load <select id="plan-load"><option value="">— new plan —</option></select></label>
-      <label>Note <input id="plan-desc" placeholder="what changed (optional)" style="width:220px"></label>
     </div>
+    <div style="margin:8px 0"><label>Change note <input id="plan-desc" maxlength="300" placeholder="what changed (optional)" style="width:260px"></label> <span id="plan-desc-count" class="muted" style="font-size:11px">0/300</span></div>
     <div class="planbar-buttons">
       <button id="btn-check" class="small">Check</button>
       <button id="btn-save-plan" class="small">Save plan</button>
@@ -36,6 +54,7 @@
       <select id="config-version"><option value="">—</option></select>
     </label>
     <p class="muted">A plan is pinned to one config version. Changing it resets the steps.</p>
+    <div id="plan-deck-viz"></div>
   </section>
 
   <section>
@@ -84,6 +103,8 @@
         <div><b>Source</b><div id="src-grid" class="grid"></div></div>
         <div><b>Receiver</b><div id="dst-grid" class="grid"></div></div>
       </div>
+      <details open>
+        <summary class="muted" style="cursor:pointer">Transfers</summary>
       <table id="edges-table"><thead><tr><th></th><th>transfer</th><th>µL</th><th></th></tr></thead><tbody></tbody></table>
       <div class="fill-tools">
         apply constant <input id="mc-const" type="number" style="width:90px"> <button class="small" id="mc-const-btn">to all transfers</button>
@@ -121,6 +142,7 @@
 
     <button id="edit-done" class="small">Done</button>
   </section>
+  </div>
 
 <style>
   section { margin: 1.5rem 0; }
@@ -151,6 +173,12 @@
   .draft-banner { margin: 0 0 1rem; padding: 8px 12px; background: #fff7e0; border: 1px solid #e0c060; border-radius: 6px; }
   .draftbar { margin-top: 10px; }
   .planbar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .bar { display: flex; justify-content: space-between; align-items: center; }
+  .btn-new { display: inline-block; padding: 6px 12px; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; }
+  .btn-new:hover { background: #f5f5f5; }
+  #plans-mine-table td, #plans-mine-table th, #plans-others-table td, #plans-others-table th { padding: 6px 10px; text-align: left; }
+  #plans-versions-panel { background: #fafafa; border: 1px solid #eee; border-radius: 6px; padding: 8px 12px; margin: 0 0 1rem; }
+  #plans-versions-panel:empty { display: none; }
   .planbar-buttons { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .how-section { margin-top: 12px; padding: 10px 12px; background: #f6f6f9; border: 1px solid #e0e0ea; border-radius: 6px; }
   .how-section h4 { margin: 0 0 6px; font-size: 13px; }
@@ -626,9 +654,10 @@ function confirmClear() {
 // load a config version's substances and core plates (does not touch steps)
 async function loadConfigMeta(versionId) {
   cfg = null; substances = []; corePlates = [];
-  if (!versionId) return;
+  if (!versionId) { renderPlanDeck(); return; }
   const detail = await api("GET", "/user/deck/configs/" + versionId);
   cfg = detail.config;
+  renderPlanDeck();
   const subs = new Set();
   for (const p of Object.values(cfg.stock_plates || {}))
     for (const c of Object.values(p.content || {})) if (c.substance) subs.add(c.substance);
@@ -713,6 +742,7 @@ async function checkDraft() {
   document.getElementById("draft-continue").onclick = async () => {
     if (plan.steps.length && !confirm("Continue draft will replace your current steps. Continue?")) return;
     await restorePlanDraft(d.content);
+    showEditor();
     document.getElementById("draft-banner").style.display = "none";
   };
   document.getElementById("draft-discard").onclick = async () => {
@@ -770,11 +800,89 @@ async function checkPlan() {
 document.getElementById("btn-check").onclick = checkPlan;
 
 // ---------- plans (save / load / fork, mirrors configs) ----------
-async function loadPlanList() {
-  const mine = await api("GET", "/user/plans/mine");
-  document.getElementById("plan-load").innerHTML = `<option value="">— new plan —</option>` +
-    mine.map(p => `<option value="${p.id}">${p.name} v${p.major}.${p.minor}.${p.patch}</option>`).join("");
+(() => {
+  const el = document.getElementById("plan-desc");
+  if (el) el.addEventListener("input", () => { document.getElementById("plan-desc-count").textContent = el.value.length + "/300"; });
+})();
+
+function escHtml(s) { return String(s).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])); }
+function showList() {
+  document.getElementById("plan-list-view").style.display = "";
+  document.getElementById("plan-editor-view").style.display = "none";
 }
+function showEditor() {
+  document.getElementById("plan-list-view").style.display = "none";
+  document.getElementById("plan-editor-view").style.display = "";
+}
+async function loadPlansMine() {
+  const mine = await api("GET", "/user/plans/mine");
+  document.querySelector("#plans-mine-table tbody").innerHTML = mine.map(p => {
+    const heritage = p.origin_name ? `<span class="muted">from ${p.origin_owner_name}/${p.origin_name}</span>` : "";
+    const desc = p.description ? escHtml(p.description) : `<span class="muted">—</span>`;
+    return `<tr><td>${p.name}</td><td>v${p.major}.${p.minor}.${p.patch}</td><td>${desc}</td><td>${heritage}</td>
+      <td><button class="small" data-editplan="${p.id}">edit</button>
+          <button class="small" data-planversions="${p.id}">versions</button></td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="muted">None yet. Use New plan.</td></tr>`;
+}
+async function loadPlansOthers() {
+  let others = [];
+  try { others = await api("GET", "/user/plans/others"); } catch (_) {}
+  document.querySelector("#plans-others-table tbody").innerHTML = others.map(p =>
+    `<tr><td>${p.owner_name}</td><td>${p.name}</td><td>v${p.major}.${p.minor}.${p.patch}</td>
+      <td><button class="small" data-editplan="${p.id}">adopt</button></td></tr>`
+  ).join("") || `<tr><td colspan="4" class="muted">None.</td></tr>`;
+}
+async function showPlansVersions(id) {
+  let vs = [];
+  try { vs = await api("GET", "/user/plans/" + id + "/versions"); } catch (_) {}
+  document.getElementById("plans-versions-panel").innerHTML = vs.length
+    ? `<b>Version history</b>` + vs.map(v => `<div style="margin:6px 0">v${v.major}.${v.minor}.${v.patch} `
+        + `<button class="small" data-editplan="${v.id}">load</button> `
+        + `<button class="small danger" data-delplanver="${v.id}">delete</button>`
+        + `<div class="muted" style="margin-left:14px;font-size:12px">${v.description ? escHtml(v.description) : "(no note)"}</div>`
+        + `</div>`).join("")
+      + `<button class="small" data-closeplanversions="1">close</button>`
+    : "";
+}
+function renderPlanDeck() {
+  const box = document.getElementById("plan-deck-viz");
+  if (!box) return;
+  if (!cfg) { box.innerHTML = ""; return; }
+  const esc = s => String(s).replace(/[<>&]/g, ch => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
+  const bySlot = {};
+  Object.entries(cfg.core_plates || {}).forEach(([name, pp]) => { if (String(pp.place).trim()) bySlot[String(pp.place).trim()] = { name, role: "core" }; });
+  Object.entries(cfg.stock_plates || {}).forEach(([name, pp]) => { if (String(pp.place).trim()) bySlot[String(pp.place).trim()] = { name, role: "stock" }; });
+  const W = 96, H = 54, GAP = 7;
+  let cells = "";
+  for (let n = 1; n <= 12; n++) {
+    const col = (n - 1) % 3, row = Math.floor((n - 1) / 3);
+    const x = col * (W + GAP), y = (3 - row) * (H + GAP);
+    if (n === 12) { cells += `<rect x="${x}" y="${y}" width="${W}" height="${H}" rx="4" fill="#f4f4f4" stroke="#ddd"/><text x="${x + W / 2}" y="${y + H / 2}" text-anchor="middle" dominant-baseline="middle" font-size="10" fill="#aaa">trash</text>`; continue; }
+    const pl = bySlot[String(n)];
+    const fill = pl ? (pl.role === "core" ? "#dbeafe" : "#dcfce7") : "#fafafa";
+    const stroke = pl ? (pl.role === "core" ? "#3b82f6" : "#22c55e") : "#e5e5e5";
+    cells += `<rect x="${x}" y="${y}" width="${W}" height="${H}" rx="4" fill="${fill}" stroke="${stroke}"/><text x="${x + 5}" y="${y + 12}" font-size="8" fill="#bbb">${n}</text>`;
+    if (pl) cells += `<text x="${x + W / 2}" y="${y + H / 2 + 3}" text-anchor="middle" font-size="10" fill="#333">${esc((pl.name || "").slice(0, 12))}</text>`;
+  }
+  const svgW = 3 * (W + GAP) - GAP, svgH = 4 * (H + GAP) - GAP;
+  box.innerHTML = `<div class="muted" style="font-size:11px;margin:6px 0 2px">Pinned deck layout (reference)</div>`
+    + `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${cells}</svg>`;
+}
+document.getElementById("plan-list-view").addEventListener("click", async e => {
+  const t = e.target;
+  try {
+    if (t.id === "btn-new-plan") { newPlan(); showEditor(); }
+    else if (t.dataset.editplan) { await loadPlan(Number(t.dataset.editplan)); }
+    else if (t.dataset.planversions) { await showPlansVersions(t.dataset.planversions); }
+    else if (t.dataset.closeplanversions) { document.getElementById("plans-versions-panel").innerHTML = ""; }
+    else if (t.dataset.delplanver) {
+      if (!confirm("Delete this plan version?")) return;
+      await api("DELETE", "/user/plans/" + t.dataset.delplanver);
+      document.getElementById("plans-versions-panel").innerHTML = ""; await loadPlansMine();
+    }
+  } catch (err) { msg(err.message, false); }
+});
+document.getElementById("btn-back-plans").onclick = () => { showList(); loadPlansMine().catch(e => msg(e.message, false)); loadPlansOthers().catch(() => {}); };
 
 async function setPlanHeritage(p) {
   const ver = `${p.major}.${p.minor}.${p.patch}`;
@@ -800,10 +908,10 @@ async function loadPlanVersions(id) {
   const box = document.getElementById("plan-versions");
   box.innerHTML = vs.length
     ? `<details style="margin:6px 0"><summary class="muted" style="cursor:pointer">version history (${vs.length})</summary>`
-      + vs.map(v => `<div style="font-size:12px">v${v.major}.${v.minor}.${v.patch} `
+      + vs.map(v => `<div style="font-size:12px;margin:4px 0">v${v.major}.${v.minor}.${v.patch} `
           + `<button class="small" data-loadver="${v.id}">load</button> `
           + `<button class="small danger" data-delver="${v.id}">delete</button>`
-          + (v.description ? ` <span class="muted">— ${v.description}</span>` : "") + `</div>`).join("")
+          + `<div class="muted" style="margin-left:14px">${v.description ? escHtml(v.description) : "(no note)"}</div>` + `</div>`).join("")
       + `</details>`
     : "";
 }
@@ -813,7 +921,7 @@ document.getElementById("plan-versions").addEventListener("click", async e => {
     await loadPlan(Number(e.target.dataset.loadver)).catch(err => msg(err.message, false));
   } else if (e.target.dataset.delver) {
     if (!confirm("Delete this plan version?")) return;
-    try { await api("DELETE", "/user/plans/" + e.target.dataset.delver); msg("Deleted.", true); await loadPlanList(); if (planBaseId) await loadPlanVersions(planBaseId); }
+    try { await api("DELETE", "/user/plans/" + e.target.dataset.delver); msg("Deleted.", true); await loadPlansMine(); if (planBaseId) await loadPlanVersions(planBaseId); }
     catch (err) { msg(err.message, false); }
   }
 });
@@ -831,6 +939,7 @@ async function loadPlan(id) {
   await setPlanHeritage(p);
   await loadPlanVersions(p.id);
   renderSteps();
+  showEditor();
 }
 
 function newPlan() {
@@ -855,8 +964,7 @@ async function savePlan() {
     document.getElementById("plan-desc").value = "";
     try { await api("DELETE", "/user/draft/plan"); } catch (_) {}
     msg(`Saved ${name} v${res.version}.`, true);
-    await loadPlanList();
-    document.getElementById("plan-load").value = res.id;
+    await loadPlansMine();
     await loadPlan(res.id);
   } catch (e) { msg(e.message, false); }
 }
@@ -864,14 +972,8 @@ async function savePlan() {
 document.getElementById("btn-save-plan").onclick = savePlan;
 document.getElementById("btn-delete-plan").onclick = async () => {
   if (!planBaseId || !confirm("Delete this plan version?")) return;
-  try { await api("DELETE", "/user/plans/" + planBaseId); msg("Deleted.", true); newPlan(); await loadPlanList(); }
+  try { await api("DELETE", "/user/plans/" + planBaseId); msg("Deleted.", true); newPlan(); showList(); await loadPlansMine(); await loadPlansOthers(); }
   catch (e) { msg(e.message, false); }
-};
-document.getElementById("plan-load").onchange = async e => {
-  const id = e.target.value;
-  if (plan.steps.length && !confirm("Load replaces the current plan. Continue?")) { e.target.value = planBaseId || ""; return; }
-  if (!id) { newPlan(); return; }
-  await loadPlan(Number(id)).catch(err => msg(err.message, false));
 };
 
 renderSteps();
@@ -879,7 +981,8 @@ renderSteps();
   try {
     await loadMethods();
     await loadConfigs();
-    await loadPlanList();
+    await loadPlansMine();
+    await loadPlansOthers();
     const params = new URLSearchParams(location.search);
     if (params.get("edit")) await loadPlan(Number(params.get("edit")));
     else await checkDraft();

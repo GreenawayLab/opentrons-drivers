@@ -14,7 +14,7 @@
     <h2>Config</h2>
     <div id="heritage" class="muted"></div>
     <label>Name <input id="config-name" placeholder="screening"></label>
-    <label>Change note <input id="config-desc" placeholder="what changed (optional)" style="width:280px"></label>
+    <div style="margin:8px 0"><label>Change note <input id="config-desc" maxlength="300" placeholder="what changed (optional)" style="width:280px"></label> <span id="config-desc-count" class="muted" style="font-size:11px">0/300</span></div>
     <button id="btn-save">Save config</button>
     <button id="btn-save-draft">Save as draft</button>
     <div id="save-err" class="error"></div>
@@ -22,14 +22,14 @@
   </section>
 
   <section>
-    <h2>Pipettes</h2>
-    <label>Left mount <input id="pip-left" list="pipette-models" placeholder="p300_single_gen2"></label>
-    <label>Right mount <input id="pip-right" list="pipette-models" placeholder="(optional)"></label>
+    <h2>Deck layout</h2>
+    <div id="deck-viz"></div>
   </section>
 
   <section>
-    <h2>Deck layout</h2>
-    <div id="deck-viz"></div>
+    <h2>Pipettes</h2>
+    <label>Left mount <input id="pip-left" list="pipette-models" placeholder="p300_single_gen2"></label>
+    <label>Right mount <input id="pip-right" list="pipette-models" placeholder="(optional)"></label>
   </section>
 
   <section>
@@ -171,9 +171,14 @@ function plateCard(p, kind, idx) {
       <label>y<input type="number" value="${p.offset.y}" data-f="${kind}:${idx}:offy"></label>
       <label>z<input type="number" value="${p.offset.z}" data-f="${kind}:${idx}:offz"></label>
     </div>
-    ${isFile ? contentRows(p, kind, idx) : `<p class="muted no-content">Modules have no wells to fill.</p>`}
+    ${isFile ? `<details open><summary class="muted" style="cursor:pointer">Well contents</summary>${contentRows(p, kind, idx)}</details>` : `<p class="muted no-content">Modules have no wells to fill.</p>`}
   </div>`;
 }
+(() => {
+  const el = document.getElementById("config-desc");
+  if (el) el.addEventListener("input", () => { document.getElementById("config-desc-count").textContent = el.value.length + "/300"; });
+})();
+
 function renderDeck() {
   const esc = s => String(s).replace(/[<>&]/g, ch => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
   const bySlot = {};
@@ -202,7 +207,7 @@ function renderDeck() {
   const svgW = 3 * (W + GAP) - GAP, svgH = 4 * (H + GAP) - GAP;
   document.getElementById("deck-viz").innerHTML =
     `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${cells}</svg>`
-    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp; slot numbers match the OT-2 deck</div>`;
+    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp;`;
 }
 
 function renderPlates() {
