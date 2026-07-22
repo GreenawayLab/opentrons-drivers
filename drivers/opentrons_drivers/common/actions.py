@@ -308,6 +308,10 @@ def reset_tipracks(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     and then resets tip tracking, so the run begins from tip position one with
     the rack both physically and logically full.
 
+    NOTE verify on hardware: reset_tipracks() is documented from API v2.0, but
+    confirm it exists in the pinned opentrons version. return_tip() is already
+    used elsewhere in this module, so that half is safe.
+
     Parameters:
         arg["pipette_mount"] (str): defaults to "left".
     """
@@ -321,21 +325,23 @@ def reset_tipracks(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
 @register_action("set_offset")
 def set_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
-    """Apply a deck offset to one specific plate, overwriting its previous one.
+    """Apply a deck offset to one specific core plate, overwriting its previous one.
 
     Offsets belong to the labware: set_offset replaces rather than accumulates,
     so the calibration UI sends the full current value for that plate each time
-    and re-moves to see the effect with no drift.
+    and re-moves to see the effect with no drift. The plate is reached through
+    core_amounts (a core plate's wells carry their Well position, whose parent is
+    the labware), so no robot handle is needed.
 
     Parameters:
-        arg["plate"] (str): the core or stock plate name.
+        arg["plate"] (str): the core plate name.
         arg["x"], arg["y"], arg["z"] (float): offset in millimetres, default 0.
     """
     plate_name = cast(str, arg["plate"])
-    robot = ctx["robot"]
-    plate = robot.core_plates.get(plate_name) or robot.stock_plates.get(plate_name)
-    if plate is None:
-        raise ValueError(f"unknown plate '{plate_name}' for calibration")
+    wells = ctx["core_amounts"].get(plate_name)
+    if not wells:
+        raise ValueError(f"unknown core plate '{plate_name}' for calibration")
+    plate = next(iter(wells.values()))["position"].parent
     plate.set_offset(
         x=cast(float, arg.get("x", 0.0)),
         y=cast(float, arg.get("y", 0.0)),
@@ -364,8 +370,7 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     rack_index = cast(int, arg.get("rack_index", 0))
     well_label = cast(str, arg.get("well", "A1"))
 
-    robot = ctx["robot"]
-    racks = robot.support_plates
+    racks = pipette.tip_racks
     if rack_index >= len(racks):
         raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
     rack = racks[rack_index]
@@ -380,16 +385,18 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 def set_tiprack_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """Apply a deck offset to one tiprack, overwriting its previous one.
 
-    Tipracks have no name in the config, so they are addressed by index, unlike
-    core and stock plates. Absolute, like set_offset.
+    Tipracks have no name in the config, so they are addressed by index into the
+    pipette's attached tip racks, unlike core plates. Absolute, like set_offset.
 
     Parameters:
-        arg["rack_index"] (int): index into the loaded tip racks, default 0.
+        arg["rack_index"] (int): index into the pipette's tip racks, default 0.
+        arg["pipette_mount"] (str): defaults to "left".
         arg["x"], arg["y"], arg["z"] (float): offset in millimetres, default 0.
     """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+    pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
     rack_index = cast(int, arg.get("rack_index", 0))
-    robot = ctx["robot"]
-    racks = robot.support_plates
+    racks = pipette.tip_racks
     if rack_index >= len(racks):
         raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
     racks[rack_index].set_offset(
@@ -402,15 +409,17 @@ def set_tiprack_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
 @register_action("calibration_plate")
 def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
-    """Pick up a tip and visit a plate's three corners, then return the tip.
+    """Pick up a tip and visit a core plate's three corners, then return the tip.
 
     Visits A1 (top left), the bottom-left corner, and the top-right corner, so
-    the three points let the user judge the plate plane under the current
-    offset. The user adjusts with set_offset and retries until happy. Corners
-    are computed from the labware, so the caller needs no well labels.
+    the three points let the user judge the plate plane under the current offset.
+    The user adjusts with set_offset and retries until happy. Corners are
+    computed from the labware, so the caller needs no well labels. The plate is
+    reached through core_amounts and the tiprack through the pipette, so no robot
+    handle is needed.
 
     Parameters:
-        arg["plate"] (str): core or stock plate name.
+        arg["plate"] (str): core plate name.
         arg["rack_index"] (int): tiprack to draw the tip from, default 0.
         arg["tip_well"] (str): which tip to use, default "A1".
         arg["pipette_mount"] (str): defaults to "left".
@@ -423,11 +432,11 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     tip_well = cast(str, arg.get("tip_well", "A1"))
     clearance = cast(float, arg.get("clearance", 0.0))
 
-    robot = ctx["robot"]
-    plate = robot.core_plates.get(plate_name) or robot.stock_plates.get(plate_name)
-    if plate is None:
-        raise ValueError(f"unknown plate '{plate_name}' for calibration")
-    racks = robot.support_plates
+    wells = ctx["core_amounts"].get(plate_name)
+    if not wells:
+        raise ValueError(f"unknown core plate '{plate_name}' for calibration")
+    plate = next(iter(wells.values()))["position"].parent
+    racks = pipette.tip_racks
     if rack_index >= len(racks):
         raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
     rack = racks[rack_index]
