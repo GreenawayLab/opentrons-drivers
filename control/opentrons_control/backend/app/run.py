@@ -188,6 +188,20 @@ class Executor:
                         break
         return False
 
+    async def one_shot(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Post a single action to the agent and wait for it to finish.
+
+        For calibration against the open session before the run starts. Not for
+        driving the protocol: once started, the drive loop owns the agent's slot.
+        """
+        async with self._client() as client:
+            await client.wait_until_ready()
+            snap = await client.submit_action(action, payload)
+            while not snap.is_terminal:
+                await asyncio.sleep(self._poll)
+                snap = await client.get_job(snap.job_id)
+        return {"action": action, "status": snap.status}
+
     def _client(self) -> Any:
         """The agent client for this run, real by default, injectable for tests."""
         if self._client_factory is not None:

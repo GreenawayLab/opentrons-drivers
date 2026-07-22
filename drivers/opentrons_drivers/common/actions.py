@@ -296,3 +296,149 @@ def test_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         pipette.home()
 
     return True
+
+# ---------- Calibration and setup actions ----------
+
+@register_action("reset_tipracks")
+def reset_tipracks(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Return any held tip and reset tip tracking so a protocol starts full.
+
+    Calibration picks up a tip to check the tip position over a well. This
+    returns that tip to its slot (return_tip, so the rack stays physically full)
+    and then resets tip tracking, so the run begins from tip position one with
+    the rack both physically and logically full.
+
+    Parameters:
+        arg["pipette_mount"] (str): defaults to "left".
+    """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+    pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
+    if pipette.has_tip:
+        pipette.return_tip()
+    pipette.reset_tipracks()
+    return True
+
+
+@register_action("set_offset")
+def set_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Apply a deck offset to one specific plate, overwriting its previous one.
+
+    Offsets belong to the labware: set_offset replaces rather than accumulates,
+    so the calibration UI sends the full current value for that plate each time
+    and re-moves to see the effect with no drift.
+
+    Parameters:
+        arg["plate"] (str): the core or stock plate name.
+        arg["x"], arg["y"], arg["z"] (float): offset in millimetres, default 0.
+    """
+    plate_name = cast(str, arg["plate"])
+    robot = ctx["robot"]
+    plate = robot.core_plates.get(plate_name) or robot.stock_plates.get(plate_name)
+    if plate is None:
+        raise ValueError(f"unknown plate '{plate_name}' for calibration")
+    plate.set_offset(
+        x=cast(float, arg.get("x", 0.0)),
+        y=cast(float, arg.get("y", 0.0)),
+        z=cast(float, arg.get("z", 0.0)),
+    )
+    return True
+
+
+@register_action("calibration_tiprack")
+def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Try to pick up a tip from a tiprack then return it, to check its offset.
+
+    The pickup itself is the test: if the pipette misaligns with the rack the
+    tip will not seat cleanly. The user watches, adjusts the rack offset with
+    set_tiprack_offset, and retries until pickup is clean. Any previously held
+    tip is returned first.
+
+    Parameters:
+        arg["rack_index"] (int): index into the loaded tip racks, default 0.
+        arg["well"] (str): which tip to try, default "A1". A central well is a
+            representative check.
+        arg["pipette_mount"] (str): defaults to "left".
+    """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+    pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
+    rack_index = cast(int, arg.get("rack_index", 0))
+    well_label = cast(str, arg.get("well", "A1"))
+
+    robot = ctx["robot"]
+    racks = robot.support_plates
+    if rack_index >= len(racks):
+        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
+    rack = racks[rack_index]
+    if pipette.has_tip:
+        pipette.return_tip()
+    pipette.pick_up_tip(rack[well_label])
+    pipette.return_tip()
+    return True
+
+
+@register_action("set_tiprack_offset")
+def set_tiprack_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Apply a deck offset to one tiprack, overwriting its previous one.
+
+    Tipracks have no name in the config, so they are addressed by index, unlike
+    core and stock plates. Absolute, like set_offset.
+
+    Parameters:
+        arg["rack_index"] (int): index into the loaded tip racks, default 0.
+        arg["x"], arg["y"], arg["z"] (float): offset in millimetres, default 0.
+    """
+    rack_index = cast(int, arg.get("rack_index", 0))
+    robot = ctx["robot"]
+    racks = robot.support_plates
+    if rack_index >= len(racks):
+        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
+    racks[rack_index].set_offset(
+        x=cast(float, arg.get("x", 0.0)),
+        y=cast(float, arg.get("y", 0.0)),
+        z=cast(float, arg.get("z", 0.0)),
+    )
+    return True
+
+
+@register_action("calibration_plate")
+def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Pick up a tip and visit a plate's three corners, then return the tip.
+
+    Visits A1 (top left), the bottom-left corner, and the top-right corner, so
+    the three points let the user judge the plate plane under the current
+    offset. The user adjusts with set_offset and retries until happy. Corners
+    are computed from the labware, so the caller needs no well labels.
+
+    Parameters:
+        arg["plate"] (str): core or stock plate name.
+        arg["rack_index"] (int): tiprack to draw the tip from, default 0.
+        arg["tip_well"] (str): which tip to use, default "A1".
+        arg["pipette_mount"] (str): defaults to "left".
+        arg["clearance"] (float): millimetres above each well top, default 0.
+    """
+    pipette_mount = cast(str, arg.get("pipette_mount", "left"))
+    pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
+    plate_name = cast(str, arg["plate"])
+    rack_index = cast(int, arg.get("rack_index", 0))
+    tip_well = cast(str, arg.get("tip_well", "A1"))
+    clearance = cast(float, arg.get("clearance", 0.0))
+
+    robot = ctx["robot"]
+    plate = robot.core_plates.get(plate_name) or robot.stock_plates.get(plate_name)
+    if plate is None:
+        raise ValueError(f"unknown plate '{plate_name}' for calibration")
+    racks = robot.support_plates
+    if rack_index >= len(racks):
+        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
+    rack = racks[rack_index]
+
+    columns = plate.columns()
+    corners: list[Well] = [columns[0][0], columns[0][-1], columns[-1][0]]
+
+    if pipette.has_tip:
+        pipette.return_tip()
+    pipette.pick_up_tip(rack[tip_well])
+    for well in corners:
+        pipette.move_to(well.top(clearance))
+    pipette.return_tip()
+    return True

@@ -67,6 +67,11 @@ def plan_to_protocol(
     incomplete: list[str] = []
     errors: list[str] = []
 
+    # "auto" pipette resolves to the first configured mount. Volume-driven
+    # selection across two pipettes is not modelled yet, so a two-pipette config
+    # always lands on the first mount until that logic exists.
+    default_mount = next(iter(config.pipettes), "left")
+
     for i, step in enumerate(steps):
         kind = step.get("kind")
         how = step.get("how") or {}
@@ -127,20 +132,24 @@ def plan_to_protocol(
                 r_running[dst] = r_running.get(dst, 0.0) + amount
                 s_running[src] = s_running.get(src, 0.0) - amount
 
-        # tag the step's transfers with the method, its params, the pipette, and
-        # the tip cycle, so each command is executable on its own
+        # tag the step's transfers to the agent's transfer_execution contract:
+        # method by name, tip_cycle as [pickup, drop], a resolved pipette_mount,
+        # and the method hyperparameters spread as top-level extras (the agent
+        # collects non-reserved top-level keys and passes them to the method).
+        # Reserved keys are written last so a stray param cannot shadow them.
         flags = _tip_flags(len(transfers), tip_policy)
+        mount = default_mount if pipette == "auto" else pipette
         for (source, receiver, amount), flag in zip(transfers, flags):
             out.append(Step(
                 action="transfer_execution",
                 payload={
+                    **params,
                     "source": source,
                     "receiver": receiver,
                     "amount": amount,
                     "method": method,
-                    "params": params,
-                    "pipette": pipette,
-                    "tip": flag,
+                    "pipette_mount": mount,
+                    "tip_cycle": [flag["pickup"], flag["drop"]],
                 },
             ))
 

@@ -5,30 +5,101 @@
 
   <div id="msg"></div>
 
-  <section>
+  <section id="launch">
     <h2>Run a plan</h2>
     <label>Robot <select id="run-robot"></select></label>
     <label>Action plan <select id="run-plan"></select></label>
-    <button id="btn-run">Submit to robot</button>
-    <div id="run-status" style="margin-top:12px"></div>
-    <p class="muted" style="font-size:12px">Execution is not wired to hardware yet. This previews the run flow: pick a robot and a plan, submit, and watch the status.</p>
+    <button id="btn-submit">Submit</button>
+    <p class="muted" style="font-size:12px">Submitting books the robot and boots the agent. You can calibrate offsets before the run starts, or run straight away.</p>
+  </section>
+
+  <section id="ready" style="display:none">
+    <h2>Robot ready</h2>
+    <p class="muted">Agent booted for <b id="ready-plan"></b> on <b id="ready-robot"></b>.</p>
+    <button id="btn-calibrate">Calibrate offsets</button>
+    <button id="btn-run-now">Run now</button>
+    <button id="btn-cancel" class="danger">Cancel</button>
+
+    <div id="cal" style="display:none;margin-top:14px">
+
+      <div id="cal-tiprack" class="cal-phase">
+        <h3>1 · Tiprack pickup</h3>
+        <p class="muted" style="font-size:12px">Try picking up a tip. If it misaligns, adjust the rack offset and retry until pickup is clean.</p>
+        <label>Rack index <input id="tr-index" type="number" value="0" style="width:50px"></label>
+        <label>Tip well <input id="tr-well" value="A1" style="width:60px"></label>
+        <button id="btn-tr-try">Try pickup</button>
+        <div style="margin-top:6px">offset:
+          x<input id="tr-x" type="number" value="0" style="width:60px">
+          y<input id="tr-y" type="number" value="0" style="width:60px">
+          z<input id="tr-z" type="number" value="0" style="width:60px">
+          <button id="btn-tr-apply">Apply &amp; retry</button>
+        </div>
+        <div id="tr-note" class="muted" style="font-size:12px;margin-top:4px"></div>
+        <div style="margin-top:10px"><button id="btn-tr-done">Tiprack good, calibrate plates &rarr;</button></div>
+      </div>
+
+      <div id="cal-plates" class="cal-phase" style="display:none">
+        <h3>2 · Plates</h3>
+        <p class="muted" style="font-size:12px">Pick a plate. The pipette takes a tip and visits three corners. Adjust the plate offset and retry until the plane looks right. Repeat for each plate you want.</p>
+        <label>Plate <select id="pl-plate"></select></label>
+        <button id="btn-pl-cal">Visit corners</button>
+        <div style="margin-top:6px">offset:
+          x<input id="pl-x" type="number" value="0" style="width:60px">
+          y<input id="pl-y" type="number" value="0" style="width:60px">
+          z<input id="pl-z" type="number" value="0" style="width:60px">
+          <button id="btn-pl-apply">Apply &amp; retry</button>
+        </div>
+        <div id="pl-note" class="muted" style="font-size:12px;margin-top:4px"></div>
+        <div style="margin-top:10px"><button id="btn-pl-done">All plates done &rarr;</button></div>
+      </div>
+
+      <div id="cal-go" class="cal-phase" style="display:none">
+        <h3>3 · Ready</h3>
+        <p class="muted" style="font-size:12px">Offsets applied and tips reset. Launch the run?</p>
+        <button id="btn-go">Go</button>
+        <div id="go-note" class="muted" style="font-size:12px;margin-top:4px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="running" style="display:none">
+    <h2>Running</h2>
+    <p><b id="run-progress"></b> <span id="run-state" class="muted"></span></p>
+    <div id="run-error" class="error"></div>
+    <button id="btn-pause">Pause</button>
+    <button id="btn-resume" style="display:none">Resume</button>
+    <button id="btn-abort" class="danger">Abort</button>
   </section>
 
 <style>
   section { margin: 1.5rem 0; }
-  section label { margin-right: 14px; }
-  #msg .error { color: #a32d2d; }
+  section label { margin-right: 12px; }
+  .cal-phase { padding: 12px; border: 1px solid #e0e0ea; border-radius: 6px; background: #f6f6f9; margin-top: 10px; }
+  .cal-phase h3 { margin-top: 0; }
+  #msg .error, #run-error { color: #a32d2d; }
+  button.danger { color: #a32d2d; }
   .proc { color: #b7791f; }
 </style>
 
 <script>
-async function api(method, path) {
-  const r = await fetch(path, { method });
+let run = null;             // { run_id, total, plates }
+const plateOffsets = {};    // plate -> {x,y,z}
+let trOffset = { x: 0, y: 0, z: 0 };
+let pollTimer = null;
+
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
   let d = null; try { d = await r.json(); } catch (_) {}
   if (!r.ok) throw new Error((d && (d.detail || d.error)) || `HTTP ${r.status}`);
   return d;
 }
-function msg(t) { document.getElementById("msg").innerHTML = t ? `<p class="error">${t}</p>` : ""; }
+function msg(t, ok) { document.getElementById("msg").innerHTML = t ? `<p class="${ok ? "" : "error"}">${t}</p>` : ""; }
+function show(id) { for (const s of ["launch", "ready", "running"]) document.getElementById(s).style.display = s === id ? "" : "none"; }
+function phase(id) { for (const p of ["cal-tiprack", "cal-plates", "cal-go"]) document.getElementById(p).style.display = p === id ? "" : "none"; }
+function note(id, t, ok) { const n = document.getElementById(id); n.textContent = t; n.style.color = ok ? "#0f6e56" : "#a32d2d"; }
+async function calibrate(action, payload) { return api("POST", `/user/runs/${run.run_id}/calibrate`, { action, payload }); }
 
 async function loadRunOptions() {
   const [robots, plans] = await Promise.all([api("GET", "/user/robots"), api("GET", "/user/plans/mine")]);
@@ -40,15 +111,98 @@ async function loadRunOptions() {
     : `<option value="">no plans</option>`;
 }
 
-document.getElementById("btn-run").onclick = () => {
+// ---- submit / open ----
+document.getElementById("btn-submit").onclick = async () => {
   const robot = document.getElementById("run-robot").value;
   const planSel = document.getElementById("run-plan");
-  const planLabel = planSel.options[planSel.selectedIndex] ? planSel.options[planSel.selectedIndex].text : "";
-  if (!robot || !planSel.value) { msg("Pick a robot and a plan first."); return; }
+  if (!robot || !planSel.value) { msg("Pick a robot and a plan."); return; }
   msg("");
-  const s = document.getElementById("run-status");
-  s.innerHTML = `<span class="proc">Processing… submitting ${planLabel} to ${robot}</span>`;
-  // Placeholder: execution is not wired to hardware yet, so nothing is dispatched.
+  try {
+    run = await api("POST", "/user/runs", { plan_id: Number(planSel.value), robot_id: robot });
+    document.getElementById("ready-plan").textContent = planSel.options[planSel.selectedIndex].text;
+    document.getElementById("ready-robot").textContent = robot;
+    document.getElementById("pl-plate").innerHTML = (run.plates || [])
+      .map(p => `<option value="${p.name}">${p.name} (${p.role})</option>`).join("");
+    document.getElementById("cal").style.display = "none";
+    show("ready");
+  } catch (e) { msg(e.message); }
+};
+
+// ---- ready ----
+document.getElementById("btn-calibrate").onclick = () => { document.getElementById("cal").style.display = ""; phase("cal-tiprack"); };
+document.getElementById("btn-run-now").onclick = startRun;
+document.getElementById("btn-cancel").onclick = async () => {
+  try { await api("POST", `/user/runs/${run.run_id}/cancel`); run = null; show("launch"); msg("Run cancelled, robot released.", true); }
+  catch (e) { msg(e.message); }
+};
+
+// ---- phase 1: tiprack ----
+function trPayload() { return { rack_index: Number(document.getElementById("tr-index").value), well: document.getElementById("tr-well").value }; }
+document.getElementById("btn-tr-try").onclick = async () => {
+  try { const r = await calibrate("calibration_tiprack", trPayload()); note("tr-note", `pickup attempted (${r.status})`, r.status === "complete"); }
+  catch (e) { note("tr-note", e.message, false); }
+};
+document.getElementById("btn-tr-apply").onclick = async () => {
+  trOffset = { x: Number(document.getElementById("tr-x").value), y: Number(document.getElementById("tr-y").value), z: Number(document.getElementById("tr-z").value) };
+  try {
+    await calibrate("set_tiprack_offset", { rack_index: Number(document.getElementById("tr-index").value), ...trOffset });
+    const r = await calibrate("calibration_tiprack", trPayload());
+    note("tr-note", `offset applied, retried (${r.status})`, r.status === "complete");
+  } catch (e) { note("tr-note", e.message, false); }
+};
+document.getElementById("btn-tr-done").onclick = () => phase("cal-plates");
+
+// ---- phase 2: plates ----
+function loadPlateOffset() {
+  const o = plateOffsets[document.getElementById("pl-plate").value] || { x: 0, y: 0, z: 0 };
+  document.getElementById("pl-x").value = o.x; document.getElementById("pl-y").value = o.y; document.getElementById("pl-z").value = o.z;
+}
+document.getElementById("pl-plate").onchange = loadPlateOffset;
+document.getElementById("btn-pl-cal").onclick = async () => {
+  try {
+    const r = await calibrate("calibration_plate", { plate: document.getElementById("pl-plate").value, rack_index: Number(document.getElementById("tr-index").value) });
+    note("pl-note", `visited corners (${r.status})`, r.status === "complete");
+  } catch (e) { note("pl-note", e.message, false); }
+};
+document.getElementById("btn-pl-apply").onclick = async () => {
+  const p = document.getElementById("pl-plate").value;
+  const off = { x: Number(document.getElementById("pl-x").value), y: Number(document.getElementById("pl-y").value), z: Number(document.getElementById("pl-z").value) };
+  plateOffsets[p] = off;
+  try {
+    await calibrate("set_offset", { plate: p, ...off });
+    const r = await calibrate("calibration_plate", { plate: p, rack_index: Number(document.getElementById("tr-index").value) });
+    note("pl-note", `applied to ${p}, revisited (${r.status})`, r.status === "complete");
+  } catch (e) { note("pl-note", e.message, false); }
+};
+document.getElementById("btn-pl-done").onclick = async () => {
+  try { await calibrate("reset_tipracks", {}); phase("cal-go"); note("go-note", "tips reset", true); }
+  catch (e) { note("pl-note", e.message, false); }
+};
+
+// ---- phase 3 / run now: start ----
+document.getElementById("btn-go").onclick = startRun;
+async function startRun() {
+  try { await api("POST", `/user/runs/${run.run_id}/start`); show("running"); poll(); }
+  catch (e) { msg(e.message); }
+}
+function renderStatus(s) {
+  document.getElementById("run-progress").textContent = `${s.cursor} / ${s.total} commands`;
+  document.getElementById("run-state").textContent = s.status;
+  document.getElementById("run-state").className = (s.status === "running" || s.status === "paused") ? "proc" : "muted";
+  document.getElementById("run-error").textContent = s.error || "";
+  document.getElementById("btn-pause").style.display = s.status === "running" ? "" : "none";
+  document.getElementById("btn-resume").style.display = s.status === "paused" ? "" : "none";
+  document.getElementById("btn-abort").style.display = (s.status === "running" || s.status === "paused") ? "" : "none";
+  if (["complete", "failed", "aborted"].includes(s.status) && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+async function pollOnce() { try { renderStatus(await api("GET", `/user/runs/${run.run_id}`)); } catch (_) {} }
+function poll() { pollOnce(); if (pollTimer) clearInterval(pollTimer); pollTimer = setInterval(pollOnce, 1000); }
+
+document.getElementById("btn-pause").onclick = async () => { await api("POST", `/user/runs/${run.run_id}/pause`).catch(e => msg(e.message)); pollOnce(); };
+document.getElementById("btn-resume").onclick = async () => { await api("POST", `/user/runs/${run.run_id}/resume`).catch(e => msg(e.message)); pollOnce(); };
+document.getElementById("btn-abort").onclick = async () => {
+  if (!confirm("Abort after the current command finishes?")) return;
+  await api("POST", `/user/runs/${run.run_id}/abort`).catch(e => msg(e.message)); pollOnce();
 };
 
 loadRunOptions().catch(e => msg(e.message));
