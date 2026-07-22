@@ -52,6 +52,20 @@ from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.vault import get_secret
 import opentrons_control.backend.app.settings.custom_types as ct
 import opentrons_control.backend.app.settings.global_variables as gv
+from opentrons_control.backend.app.generator import plan_to_protocol
+from opentrons_control.backend.app.simulator import simulate
+from opentrons_control.backend.app.run import (
+    Executor,
+    Run,
+    assemble_launch_files,
+    freeze_stream,
+    new_run_id,
+    register,
+)
+from opentrons_control.backend.app.run import get as get_executor
+from opentrons_control.backend.app.protocol_model import BaseConfig
+from opentrons_control.backend.app.db.runner import fetch_one
+from opentrons_control.backend.app.security import CurrentUser, get_current_user
 
 
 logger = logging.getLogger(__name__)
@@ -106,6 +120,11 @@ class DeployStarted(BaseModel):
     """Returned immediately when a deploy job is accepted."""
 
     job_id: str
+
+
+class OpenRunRequest(BaseModel):
+    plan_id: int
+    robot_id: str
 
 
 class DeployStatus(BaseModel):
@@ -354,21 +373,118 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
         return Response(content=token, media_type="text/plain")
 
     # ------------------------------------------------------------------
-    # Manual protocols (stub)
+    # Manual runs: open -> (calibrate) -> start, with abort / pause / resume
     # ------------------------------------------------------------------
 
-    @app.post("/manual/protocols", status_code=501)
-    async def submit_manual_protocol() -> dict[str, str]:
-        """
-        Submit a manual protocol payload for backend-driven execution.
+    @app.post("/runs", status_code=201)
+    async def open_run(
+        req: OpenRunRequest,
+        user: CurrentUser = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> dict[str, Any]:
+        """Freeze a plan, gate it on the checker, and book plus boot the robot.
 
-        The slicing pipeline that converts an uploaded instruction document
-        into a queue of actions is not part of this module and is not yet
-        implemented. The endpoint exists so the URL surface is stable.
+        Lands the run in ``ready`` with an open session and a dormant executor.
+        Nothing drives yet: the user may calibrate offsets against the open
+        agent, then call /start to attach the driver, or /cancel to back out.
         """
-        raise HTTPException(
-            status_code=501,
-            detail="manual protocol submission is not yet implemented",
-        )
+        plan = fetch_one(db, "action_plans/get.sql", {"id": req.plan_id})
+        if plan is None:
+            raise HTTPException(status_code=404, detail=f"unknown plan {req.plan_id}")
+        cfg_row = fetch_one(db, "deck_configs/get.sql", {"id": plan["config_id"]})
+        if cfg_row is None:
+            raise HTTPException(status_code=404, detail=f"unknown config {plan['config_id']}")
+        config = BaseConfig.model_validate(cfg_row["config"])
+
+        # freeze: expand to commands with how, then gate on the checker so no
+        # invalid or incomplete plan can reach a robot
+        protocol, incomplete, gen_errors = plan_to_protocol(config, plan["steps"], name=plan["name"])
+        if incomplete:
+            raise HTTPException(status_code=409, detail="plan is incomplete; finish it before running")
+        if gen_errors:
+            raise HTTPException(status_code=409, detail=gen_errors[0])
+        report = simulate(protocol)
+        if not report.ok:
+            first = next((e for v in report.verdicts for e in v.errors), "plan does not pass the check")
+            raise HTTPException(status_code=409, detail=first)
+        stream = freeze_stream(protocol.steps)
+
+        # ship the labware defs the config references that live in the labware
+        # table; standard opentrons labware is resolved on the robot and skipped
+        labware_defs: dict[str, Any] = {}
+        for plate in {**config.core_plates, **config.stock_plates}.values():
+            row = fetch_one(db, "labware/get.sql", {"name": plate.type})
+            if row is not None:
+                labware_defs[plate.type] = row["definition"]
+        files = assemble_launch_files(cfg_row["config"], labware_defs)
+
+        run_id = new_run_id()
+        try:
+            session = await launch_session(
+                registry,
+                robot_id=req.robot_id,
+                protocol_name=plan["name"],
+                mode="manual",
+                files=files,
+                client_id=run_id,
+            )
+        except ct.UnknownRobot:
+            raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
+        except ct.RobotBusy as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except ct.FileFormatError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ct.BootstrapFailed as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        # dormant executor: constructed with the open session but not started, so
+        # calibration can run first. The token releases the robot on teardown.
+        token = session.token
+        the_run = Run(run_id=run_id, robot_id=req.robot_id, stream=stream, token=token)
+        executor = Executor(the_run, session.agent_base_url, on_teardown=lambda: registry.release(token))
+        register(executor)
+        return {"run_id": run_id, "token": token, "status": the_run.status, "total": the_run.total}
+
+    def _run_or_404(run_id: str) -> Executor:
+        ex = get_executor(run_id)
+        if ex is None:
+            raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
+        return ex
+
+    @app.post("/runs/{run_id}/start")
+    async def start_run(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        """Attach the driver and begin executing, after any calibration."""
+        ex = _run_or_404(run_id)
+        ex.start()
+        return ex.status()
+
+    @app.post("/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        """Back out of a ready run that was never started, releasing the robot."""
+        ex = _run_or_404(run_id)
+        ex.cancel()
+        return ex.status()
+
+    @app.post("/runs/{run_id}/abort")
+    async def abort_run(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        ex = _run_or_404(run_id)
+        ex.abort()
+        return ex.status()
+
+    @app.post("/runs/{run_id}/pause")
+    async def pause_run(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        ex = _run_or_404(run_id)
+        ex.pause()
+        return ex.status()
+
+    @app.post("/runs/{run_id}/resume")
+    async def resume_run(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        ex = _run_or_404(run_id)
+        ex.resume()
+        return ex.status()
+
+    @app.get("/runs/{run_id}")
+    async def run_status(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        return _run_or_404(run_id).status()
 
     return app

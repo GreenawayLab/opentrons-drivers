@@ -514,6 +514,27 @@ async def robots_for_user(request: Request) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.post("/user/runs")
+async def runs_open(request: Request) -> Response:
+    r = await call_backend(request, "POST", "/runs", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/runs/{run_id}")
+async def runs_status(request: Request, run_id: str) -> Response:
+    r = await call_backend(request, "GET", f"/runs/{run_id}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.post("/user/runs/{run_id}/{action}")
+async def runs_control(request: Request, run_id: str, action: str) -> Response:
+    # whitelist the control verbs so the relay cannot reach arbitrary backend paths
+    if action not in ("start", "cancel", "abort", "pause", "resume"):
+        return JSONResponse({"detail": f"unknown run action {action}"}, status_code=404)
+    r = await call_backend(request, "POST", f"/runs/{run_id}/{action}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/user/plans/mine")
 async def plans_mine(request: Request) -> Response:
     r = await call_backend(request, "GET", "/api/user/plans/mine")

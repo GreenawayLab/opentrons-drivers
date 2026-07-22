@@ -25,6 +25,21 @@ from opentrons_control.backend.app.protocol_model import (
 )
 
 
+DEFAULT_METHOD = "basic_liquid_transfer"
+
+
+def _tip_flags(n: int, policy: str) -> list[dict[str, bool]]:
+    """Per-transfer pickup/drop flags for a step's tip policy.
+
+    reuse picks up once on the first transfer and drops on the last, holding the
+    tip between. fresh uses a new tip for every transfer. A single-transfer step
+    picks up and drops on that one transfer under either policy.
+    """
+    if policy == "reuse":
+        return [{"pickup": i == 0, "drop": i == n - 1} for i in range(n)]
+    return [{"pickup": True, "drop": True} for _ in range(n)]
+
+
 def _seed_core(config: BaseConfig) -> dict[str, dict[str, float]]:
     """Running per-well volume for core plates, seeded from authored content."""
     core: dict[str, dict[str, float]] = {}
@@ -54,6 +69,15 @@ def plan_to_protocol(
 
     for i, step in enumerate(steps):
         kind = step.get("kind")
+        how = step.get("how") or {}
+        method = how.get("method") or DEFAULT_METHOD
+        params = how.get("params") or {}
+        pipette = how.get("pipette") or "auto"
+        tip_policy = how.get("tip") or "fresh"
+
+        # collect this step's transfers as (source, receiver, amount), updating
+        # the running ledger as we go so fill_to resolves against live volumes
+        transfers: list[tuple[list[Any], list[Any], float]] = []
 
         if kind == "add_stock":
             plate = step.get("dest_plate")
@@ -84,10 +108,7 @@ def plan_to_protocol(
                         continue
                 else:
                     amount = float(cell.get("value") if isinstance(cell, dict) else cell)
-                out.append(Step(
-                    action="transfer_execution",
-                    payload={"source": [substance], "receiver": [plate, well], "amount": amount},
-                ))
+                transfers.append(([substance], [plate, well], amount))
                 running[well] = running.get(well, 0.0) + amount
 
         elif kind == "move_core":
@@ -102,11 +123,25 @@ def plan_to_protocol(
                     incomplete.append(f"step {i + 1}: transfer {src} to {dst} has no volume")
                     continue
                 amount = float(vol)
-                out.append(Step(
-                    action="transfer_execution",
-                    payload={"source": [s_plate, src], "receiver": [r_plate, dst], "amount": amount},
-                ))
+                transfers.append(([s_plate, src], [r_plate, dst], amount))
                 r_running[dst] = r_running.get(dst, 0.0) + amount
                 s_running[src] = s_running.get(src, 0.0) - amount
+
+        # tag the step's transfers with the method, its params, the pipette, and
+        # the tip cycle, so each command is executable on its own
+        flags = _tip_flags(len(transfers), tip_policy)
+        for (source, receiver, amount), flag in zip(transfers, flags):
+            out.append(Step(
+                action="transfer_execution",
+                payload={
+                    "source": source,
+                    "receiver": receiver,
+                    "amount": amount,
+                    "method": method,
+                    "params": params,
+                    "pipette": pipette,
+                    "tip": flag,
+                },
+            ))
 
     return ManualProtocol(name=name, drivers_version=drivers_version, config=config, steps=out), incomplete, errors
