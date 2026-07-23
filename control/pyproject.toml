@@ -2,7 +2,7 @@
 name = "opentrons_control"
 # Version of the control-plane software (backend / proxy / frontend /
 # maintainer). Bump this, then rebuild and redeploy the Docker stack.
-version = "0.1.0"
+version = "1.0.0"
 description = "Control-plane services for a fleet of Opentrons robots"
 authors = [
     {name = "Alex Ostudin", email = "ao1423@ic.ac.uk"},
