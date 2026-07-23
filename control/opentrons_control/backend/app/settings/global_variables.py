@@ -50,11 +50,16 @@ DEFAULT_CONFIG_PATH = "/data/backend.json"
 #: Distribution / import name of the on-robot drivers package.
 DRIVERS_PACKAGE = "opentrons_drivers"
 
-#: pip on the robot. Set to "python3 -m pip" if bare pip resolves to a
-#: different interpreter than the one opentrons_execute runs — the install
-#: target and the launch-time path discovery both derive from this, so the
-#: two stay consistent by construction.
-ROBOT_PIP = "pip"
+#: Explicit interpreter path on the robot. Empty means detect it at runtime,
+#: see bootstrap.detect_python. Set this only to pin a specific interpreter,
+#: for example when a robot has several and the probe picks the wrong one.
+ROBOT_PYTHON = ""
+
+#: Interpreter candidates tried in order when ROBOT_PYTHON is empty. The first
+#: whose "-m pip" actually responds wins. Bare "pip" is deliberately absent as a
+#: candidate: it is missing on some robot images, which is what makes runtime
+#: detection necessary in the first place.
+PYTHON_CANDIDATES = ("python3", "python", "/usr/bin/python3")
 
 #: Path of the agent entry point relative to the installed package's
 #: location (i.e. relative to `pip show`'s reported Location).

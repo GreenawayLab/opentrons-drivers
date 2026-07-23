@@ -27,7 +27,7 @@ a package index — ``--no-deps`` is mandatory; without it pip tries to resolve
 ``opentrons`` from PyPI and hangs forever. The install is a single, atomic pip
 invocation:
 
-    upload wheel  →  pip install --force-reinstall --no-deps <wheel>  →
+    upload wheel  →  <python> -m pip install --force-reinstall --no-deps <wheel>  →
     remove the wheel
 
 ``--force-reinstall`` replaces the package in one step (no separate uninstall),
@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from opentrons_control.backend.app.bootstrap import SSHClient
+from opentrons_control.backend.app.bootstrap import SSHClient, robot_pip
 from opentrons_control.backend.app.robot_sessions import Robot, SessionRegistry
 import opentrons_control.backend.app.settings.custom_types as ct
 import opentrons_control.backend.app.settings.global_variables as gv
@@ -91,6 +91,9 @@ def install_wheel_on_robot(robot: Robot, wheel: Path, version: str) -> str:
 
     :param robot: Target robot connection details.
     :param wheel: Local path to the wheel to install.
+    The interpreter is detected per robot rather than trusting a bare ``pip``
+    command, which is absent on some robot images.
+
     :param version: Version label, used only for the returned status string.
     :returns: A short status string, e.g. ``"installed 0.2.0"``.
     :raises SSHError: if the upload or the pip install fails.
@@ -103,7 +106,7 @@ def install_wheel_on_robot(robot: Robot, wheel: Path, version: str) -> str:
     ssh.run(f"mkdir -p {q_dir}", timeout=30)
     ssh.upload(wheel, remote)
     ssh.run(
-        f"{gv.ROBOT_PIP} install --force-reinstall --no-deps {q_remote}",
+        f"{robot_pip(ssh)} install --force-reinstall --no-deps {q_remote}",
         timeout=300,
     )
     ssh.run(f"rm -f {q_remote}", timeout=30)

@@ -13,6 +13,7 @@ loop via run_in_executor().
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Iterable, Sequence, Optional
@@ -151,6 +152,69 @@ class SSHClient:
         self._run(cmd)
 
 
+# ------------------------------------------------------------------
+# Interpreter discovery
+# ------------------------------------------------------------------
+
+
+def detect_python(ssh: SSHClient, *, timeout: int = 30) -> str:
+    """Return the path of a robot interpreter whose ``-m pip`` works.
+
+    Bare ``pip`` is not a reliable command across robot images. Some have it on
+    PATH, some do not. Probing for an interpreter and invoking pip as a module
+    sidesteps that, and pins the install to a known interpreter rather than to
+    whatever ``pip`` happens to resolve to.
+
+    Candidates from :data:`PYTHON_CANDIDATES` are tried in order and the first
+    whose ``-m pip`` responds wins. :data:`ROBOT_PYTHON`, when set, skips the
+    probe entirely.
+
+    Not yet guaranteed: that this interpreter is the one ``opentrons_execute``
+    runs under. Deriving a candidate from the ``opentrons_execute`` shebang and
+    probing it first is the intended next step, after which the install target
+    and the runtime interpreter agree by construction.
+
+    :param ssh: Connected client for the target robot.
+    :param timeout: Seconds to allow for the probe.
+    :returns: An interpreter path, for example ``/usr/bin/python3``.
+    :raises SSHError: if no candidate has a working pip.
+    """
+    if gv.ROBOT_PYTHON:
+        return gv.ROBOT_PYTHON
+
+    candidates = " ".join(shlex.quote(c) for c in gv.PYTHON_CANDIDATES)
+    # The trailing "|| true" stops a no-match from surfacing as a raw SSH
+    # failure, so an empty result becomes the clearer error raised below.
+    probe = (
+        f"for c in {candidates}; do "
+        f'command -v "$c" >/dev/null 2>&1 && '
+        f'"$c" -m pip --version >/dev/null 2>&1 && '
+        f'command -v "$c" && break; '
+        f"done || true"
+    )
+    found = [
+        line.strip()
+        for line in ssh.run_output(probe, timeout=timeout).splitlines()
+        if line.strip()
+    ]
+    if not found:
+        tried = ", ".join(gv.PYTHON_CANDIDATES)
+        raise SSHError(
+            f"no usable python on {ssh.host}: tried {tried}, none had a working "
+            f"'-m pip'. Set ROBOT_PYTHON to pin an interpreter explicitly."
+        )
+    return found[0]
+
+
+def robot_pip(ssh: SSHClient, *, timeout: int = 30) -> str:
+    """Return this robot's pip invocation as a shell fragment.
+
+    Always ``<interpreter> -m pip``, so the wheel install and the launch-time
+    ``pip show`` lookup resolve against the same interpreter.
+    """
+    return f"{shlex.quote(detect_python(ssh, timeout=timeout))} -m pip"
+
+
 class OTBootstrap:
     """
     Opentrons-specific bootstrap helper.
@@ -244,9 +308,9 @@ class OTBootstrap:
           ``PYTHONUNBUFFERED=1`` so runlog output is visible in
           ``agent.log`` in real time, not after process exit.
 
-        Assumes the OT has ``nohup``, ``opentrons_execute``, the pip given
-        by :data:`ROBOT_PIP`, and ``sed`` on PATH, and ``opentrons_drivers``
-        installed.
+        Assumes the OT has ``nohup``, ``opentrons_execute``, an interpreter
+        whose ``-m pip`` works (see :func:`detect_python`), and ``sed`` on
+        PATH, and ``opentrons_drivers`` installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
 
@@ -255,7 +319,7 @@ class OTBootstrap:
         # to an assignment RHS, so a Location with spaces survives; we quote
         # on every use below.
         location = (
-            f"$({gv.ROBOT_PIP} show {gv.DRIVERS_PACKAGE} "
+            f"$({robot_pip(self.ssh)} show {gv.DRIVERS_PACKAGE} "
             f"| sed -n 's/^Location: //p')"
         )
 
