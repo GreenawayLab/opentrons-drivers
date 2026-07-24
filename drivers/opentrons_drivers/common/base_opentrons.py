@@ -9,20 +9,6 @@ from opentrons_drivers.common.actions import ACTION_REGISTRY
 from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo
 from pathlib import Path
 
-
-def _load_plate_def(filename: str) -> Dict[str, Any]:
-    """Read a labware/plate definition JSON from the ``plates`` directory.
-
-    Always decoded as UTF-8, regardless of the process locale. These
-    definitions contain 'µL' (U+00B5, bytes 0xC2 0xB5 in UTF-8); under a
-    non-UTF-8 locale a default-encoding read mojibakes it to 'ÂµL', and the
-    opentrons labware validator then rejects metadata.displayVolumeUnits.
-    Routing every plate read through here pins the encoding in one place so
-    it cannot leak back the way a per-call encoding= fix did.
-    """
-    return json.loads(Path("plates", filename).read_text(encoding="utf-8"))
-
-
 class Opentrons:
     """
     Unified Opentrons driver responsible for:
@@ -136,6 +122,18 @@ class Opentrons:
     # Internal: Labware creation
     # ----------------------------------------------------------------------
 
+    def _load_plate_def(filename: str) -> Dict[str, Any]:
+        """Read a labware/plate definition JSON from the ``plates`` directory.
+
+        Always decoded as UTF-8, regardless of the process locale. These
+        definitions contain 'µL' (U+00B5, bytes 0xC2 0xB5 in UTF-8); under a
+        non-UTF-8 locale a default-encoding read mojibakes it to 'ÂµL', and the
+        opentrons labware validator then rejects metadata.displayVolumeUnits.
+        Routing every plate read through here pins the encoding in one place so
+        it cannot leak back the way a per-call encoding= fix did.
+        """
+        return json.loads(Path("plates", filename).read_text(encoding="utf-8"))
+
     def _init_assigned_plates(self, name: str, is_stock: bool) -> None:
         """
         Load all labware defined under `base_config[name]` and apply offsets.
@@ -155,7 +153,7 @@ class Opentrons:
             # Tipracks typically use standard names but may use custom definitions
             if plate_name.startswith("tiprack_"):
                 if labware_type.endswith(".json"):
-                    lw_def = _load_plate_def(labware_type)
+                    lw_def = self._load_plate_def(labware_type)
                     plate = self.protocol.load_labware_from_definition(
                         lw_def, deck_slot
                     )
@@ -173,7 +171,7 @@ class Opentrons:
                 continue
 
             # Core / stock plates always use custom JSON
-            lw_def = _load_plate_def(labware_type)
+            lw_def = self._load_plate_def(labware_type)
 
             plate = self.protocol.load_labware_from_definition(
                 lw_def, deck_slot
@@ -230,7 +228,7 @@ class Opentrons:
             if plate_name.startswith("tiprack_"):
                 continue
 
-            wells_def = _load_plate_def(plate_info["type"])["wells"]
+            wells_def = self._load_plate_def(plate_info["type"])["wells"]
             well_names = list(wells_def.keys())
 
             content = plate_info.get("content") or {}
