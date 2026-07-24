@@ -456,8 +456,10 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             if the_run.status == "cancelled":
                 registry.release(token)
                 return
+            # _abort_session signals the agent to terminate and then releases
+            # the lock. Plain release would leave the agent running and idle.
             executor.attach_session(
-                session.agent_base_url, token, lambda: registry.release(token)
+                session.agent_base_url, token, lambda: _abort_session(registry, token)
             )
 
         asyncio.create_task(_book())
@@ -479,8 +481,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
         return ex
 
-    _CALIBRATION_ACTIONS = {"reset_tipracks", "set_offset", "set_tiprack_offset", 
-                            "calibration_tiprack", "calibration_plate"}
+    _CALIBRATION_ACTIONS = {"reset_tipracks", "set_offset", "set_tiprack_offset", "calibration_tiprack", "calibration_plate"}
 
     @app.post("/runs/{run_id}/calibrate")
     async def calibrate_run(

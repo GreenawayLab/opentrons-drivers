@@ -31,7 +31,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.protocol_model import Step
@@ -127,7 +127,7 @@ class Executor:
         self,
         run: Run,
         agent_base_url: str | None = None,
-        on_teardown: Callable[[], None] | None = None,
+        on_teardown: Callable[[], Awaitable[None]] | None = None,
         # client_factory is a seam for the agent client: None builds the real
         # OTClient, tests and a future dry-run inject a fake with no robot
         client_factory: Callable[[str], Any] | None = None,
@@ -135,7 +135,7 @@ class Executor:
     ) -> None:
         self.run = run
         self._agent_base_url = agent_base_url
-        self._on_teardown = on_teardown or (lambda: None)
+        self._on_teardown = on_teardown
         self._client_factory = client_factory
         self._poll = poll_seconds
         # two separate channels: run.stream is the frozen list of actions the
@@ -144,7 +144,7 @@ class Executor:
         self._task: asyncio.Task[None] | None = None
 
     def attach_session(
-        self, agent_base_url: str, token: str, on_teardown: Callable[[], None]
+        self, agent_base_url: str, token: str, on_teardown: Callable[[], Awaitable[None]]
     ) -> None:
         """Bind a freshly opened session and mark the run ready to start.
 
@@ -156,6 +156,22 @@ class Executor:
         self._on_teardown = on_teardown
         self.run.token = token
         self.run.status = "ready"
+
+    async def _teardown(self) -> None:
+        """Release the session and stop the agent, whatever the terminal state.
+
+        Freeing the registry lock alone leaves the agent process running on the
+        robot, which then sits idle holding the hardware. Teardown must reach
+        the robot, so it is async and awaited rather than a plain callback.
+        Failures are swallowed: the desired end state is "agent gone", and the
+        caller already frees the lock in its own finally.
+        """
+        if self._on_teardown is None:
+            return
+        try:
+            await self._on_teardown()
+        except Exception:
+            pass
 
     def _require_session(self) -> None:
         """Guard the operations that need an open agent."""
@@ -199,7 +215,7 @@ class Executor:
         """
         if self._task is None:
             self.run.status = "cancelled"
-            self._on_teardown()
+            asyncio.create_task(self._teardown())
 
     # ---- the loop ----
     async def _drain_control(self) -> bool:
@@ -236,7 +252,9 @@ class Executor:
             while not snap.is_terminal:
                 await asyncio.sleep(self._poll)
                 snap = await client.get_job(snap.job_id)
-        return {"action": action, "status": snap.status}
+        # the agent puts the failing action's traceback in error, so pass it
+        # through: without it a failed calibration step is undiagnosable
+        return {"action": action, "status": snap.status, "error": snap.error}
 
     def _client(self) -> Any:
         """The agent client for this run, real by default, injectable for tests."""
@@ -277,7 +295,7 @@ class Executor:
             self.run.status = "failed"
             self.run.error = str(exc)
         finally:
-            self._on_teardown()
+            await self._teardown()
 
 
 # ---- executor registry: run_id -> Executor, sibling to the session registry ----
