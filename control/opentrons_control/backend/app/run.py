@@ -69,6 +69,21 @@ def freeze_stream(commands: list["Step"]) -> list["Step"]:
     return [Step(action="reset_tipracks", payload={})] + list(commands)
 
 
+def describe(step: Step) -> str:
+    """One-line human description of a command, for the run progress view.
+
+    Built once when the run is frozen, so the status poll only has to carry the
+    cursor rather than resending the whole stream every second.
+    """
+    if step.action != "transfer_execution":
+        return step.action.replace("_", " ")
+    payload = step.payload
+    source = payload["source"]
+    src = source[0] if len(source) == 1 else f"{source[0]}/{source[1]}"
+    receiver = payload["receiver"]
+    return f"{src} to {receiver[0]}/{receiver[1]}, {payload['amount']:g} \u00b5L"
+
+
 class Control(Enum):
     """The finite control vocabulary an executor understands at a boundary.
 

@@ -526,6 +526,12 @@ async def runs_status(request: Request, run_id: str) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.post("/user/runs/{run_id}/calibrate")
+async def runs_calibrate(request: Request, run_id: str) -> Response:
+    r = await call_backend(request, "POST", f"/runs/{run_id}/calibrate", json=await request.json())
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.post("/user/runs/{run_id}/{action}")
 async def runs_control(request: Request, run_id: str, action: str) -> Response:
     # whitelist the control verbs so the relay cannot reach arbitrary backend paths

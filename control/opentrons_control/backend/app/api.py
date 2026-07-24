@@ -59,6 +59,7 @@ from opentrons_control.backend.app.run import (
     Executor,
     Run,
     assemble_launch_files,
+    describe,
     freeze_stream,
     new_run_id,
     register,
@@ -469,6 +470,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             "status": the_run.status,
             "total": the_run.total,
             "plates": plates,
+            "commands": [describe(s) for s in stream],
         }
 
     def _run_or_404(run_id: str) -> Executor:
@@ -477,7 +479,8 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown run {run_id}")
         return ex
 
-    _CALIBRATION_ACTIONS = {"reset_tipracks", "set_offset", "set_tiprack_offset", "calibration_tiprack", "calibration_plate"}
+    _CALIBRATION_ACTIONS = {"reset_tipracks", "set_offset", "set_tiprack_offset", 
+                            "calibration_tiprack", "calibration_plate"}
 
     @app.post("/runs/{run_id}/calibrate")
     async def calibrate_run(
