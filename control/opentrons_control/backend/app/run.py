@@ -89,7 +89,7 @@ class Run:
     robot_id: str
     stream: list["Step"]
     cursor: int = 0
-    status: str = "ready"  # ready | running | paused | complete | failed | aborted | cancelled
+    status: str = "booking"  # booking | ready | running | paused | complete | failed | aborted | cancelled
     error: str | None = None
     token: str | None = None
 
@@ -111,7 +111,7 @@ class Executor:
     def __init__(
         self,
         run: Run,
-        agent_base_url: str,
+        agent_base_url: str | None = None,
         on_teardown: Callable[[], None] | None = None,
         # client_factory is a seam for the agent client: None builds the real
         # OTClient, tests and a future dry-run inject a fake with no robot
@@ -127,6 +127,25 @@ class Executor:
         # cursor walks, this queue carries only external control signals
         self._control: asyncio.Queue[Control] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
+
+    def attach_session(
+        self, agent_base_url: str, token: str, on_teardown: Callable[[], None]
+    ) -> None:
+        """Bind a freshly opened session and mark the run ready to start.
+
+        Booking is slow (SSH upload plus agent boot), so it happens in the
+        background after the launch request has already returned. The executor
+        exists from the moment the run is created and gains its session here.
+        """
+        self._agent_base_url = agent_base_url
+        self._on_teardown = on_teardown
+        self.run.token = token
+        self.run.status = "ready"
+
+    def _require_session(self) -> None:
+        """Guard the operations that need an open agent."""
+        if self._agent_base_url is None:
+            raise RuntimeError("the robot is still booking, no agent yet")
 
     # ---- control surface: enqueue and return, never drive directly ----
     def abort(self) -> None:
@@ -154,6 +173,7 @@ class Executor:
 
     def start(self) -> None:
         """Spawn the drive loop as a background task and return immediately."""
+        self._require_session()
         self._task = asyncio.create_task(self._drive())
 
     def cancel(self) -> None:
@@ -194,6 +214,7 @@ class Executor:
         For calibration against the open session before the run starts. Not for
         driving the protocol: once started, the drive loop owns the agent's slot.
         """
+        self._require_session()
         async with self._client() as client:
             await client.wait_until_ready()
             snap = await client.submit_action(action, payload)

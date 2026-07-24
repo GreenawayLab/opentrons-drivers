@@ -36,6 +36,7 @@ from dataclasses import asdict
 from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
+import asyncio
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
@@ -389,9 +390,10 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     ) -> dict[str, Any]:
         """Freeze a plan, gate it on the checker, and book plus boot the robot.
 
-        Lands the run in ``ready`` with an open session and a dormant executor.
-        Nothing drives yet: the user may calibrate offsets against the open
-        agent, then call /start to attach the driver, or /cancel to back out.
+        Returns immediately with the run in ``booking``. Booting the agent takes
+        tens of seconds, so it proceeds in the background and the caller polls
+        GET /runs/{id} until the status turns ``ready`` or ``failed``. Nothing
+        drives until /start.
         """
         plan = fetch_one(db, "action_plans/get.sql", {"id": req.plan_id})
         if plan is None:
@@ -424,36 +426,46 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
         files = assemble_launch_files(cfg_row["config"], labware_defs)
 
         run_id = new_run_id()
-        try:
-            session = await launch_session(
-                registry,
-                robot_id=req.robot_id,
-                protocol_name=plan["name"],
-                mode="manual",
-                files=files,
-                client_id=run_id,
-            )
-        except ct.UnknownRobot:
-            raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
-        except ct.RobotBusy as e:
-            raise HTTPException(status_code=409, detail=str(e))
-        except ct.FileFormatError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except ct.BootstrapFailed as e:
-            raise HTTPException(status_code=502, detail=str(e))
-
-        # dormant executor: constructed with the open session but not started, so
-        # calibration can run first. The token releases the robot on teardown.
-        token = session.token
-        the_run = Run(run_id=run_id, robot_id=req.robot_id, stream=stream, token=token)
-        executor = Executor(the_run, session.agent_base_url, on_teardown=lambda: registry.release(token))
+        the_run = Run(run_id=run_id, robot_id=req.robot_id, stream=stream, status="booking")
+        executor = Executor(the_run)
         register(executor)
+
+        async def _book() -> None:
+            """Book the robot and boot the agent, then attach the session.
+
+            Runs detached because bootstrapping takes tens of seconds, far past
+            any sane proxy read timeout. Failures land on the run's status
+            rather than on a response nobody is waiting for.
+            """
+            try:
+                session = await launch_session(
+                    registry,
+                    robot_id=req.robot_id,
+                    protocol_name=plan["name"],
+                    mode="manual",
+                    files=files,
+                    client_id=run_id,
+                )
+            except Exception as exc:
+                the_run.status = "failed"
+                the_run.error = str(exc)
+                return
+            token = session.token
+            # the user may have cancelled while the agent was still booting
+            if the_run.status == "cancelled":
+                registry.release(token)
+                return
+            executor.attach_session(
+                session.agent_base_url, token, lambda: registry.release(token)
+            )
+
+        asyncio.create_task(_book())
+
         # only core plates are live-calibratable (reached by name via
         # core_amounts). Stock plates keep the offset set at authoring time.
         plates = [{"name": n, "role": "core"} for n in config.core_plates]
         return {
             "run_id": run_id,
-            "token": token,
             "status": the_run.status,
             "total": the_run.total,
             "plates": plates,

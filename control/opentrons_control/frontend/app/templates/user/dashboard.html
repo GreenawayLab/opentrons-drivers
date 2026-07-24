@@ -15,7 +15,8 @@
 
   <section id="ready" style="display:none">
     <h2>Robot ready</h2>
-    <p class="muted">Agent booted for <b id="ready-plan"></b> on <b id="ready-robot"></b>.</p>
+    <p class="muted"><b id="ready-plan"></b> on <b id="ready-robot"></b></p>
+    <p id="ready-status" class="proc"></p>
     <button id="btn-calibrate">Calibrate offsets</button>
     <button id="btn-run-now">Run now</button>
     <button id="btn-cancel" class="danger">Cancel</button>
@@ -125,8 +126,37 @@ document.getElementById("btn-submit").onclick = async () => {
       .map(p => `<option value="${p.name}">${p.name} (${p.role})</option>`).join("");
     document.getElementById("cal").style.display = "none";
     show("ready");
+    setBooking(true);
+    waitForReady();
   } catch (e) { msg(e.message); }
 };
+
+// Booking is slow (agent bootstrap over SSH), so the open call returns straight
+// away and we poll until the agent is up.
+function setBooking(busy) {
+  for (const id of ["btn-calibrate", "btn-run-now", "btn-cancel"]) {
+    document.getElementById(id).disabled = busy;
+  }
+  document.getElementById("ready-status").textContent = busy ? "Booking robot and starting agent…" : "";
+}
+async function waitForReady() {
+  while (run) {
+    await new Promise(r => setTimeout(r, 1000));
+    let s;
+    try { s = await api("GET", `/user/runs/${run.run_id}`); } catch (_) { continue; }
+    if (s.status === "ready") {
+      setBooking(false);
+      document.getElementById("ready-status").textContent = "Agent ready.";
+      return;
+    }
+    if (s.status === "failed") {
+      setBooking(false);
+      msg("Launch failed: " + (s.error || "unknown error"));
+      run = null; show("launch");
+      return;
+    }
+  }
+}
 
 // ---- ready ----
 document.getElementById("btn-calibrate").onclick = () => { document.getElementById("cal").style.display = ""; phase("cal-tiprack"); };
