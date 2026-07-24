@@ -28,10 +28,10 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 GITHUB_API_BASE = os.environ.get("GITHUB_API_BASE", "https://api.github.com").rstrip("/")
 
 #: Branch, tag, or commit SHA to build from.
-GIT_REF = os.environ.get("GIT_REF", "main")
+GIT_REF = os.environ.get("DRIVERS_GIT_REF", "main")
 
 #: Repo-root subdirectory holding the drivers pyproject.toml.
-DRIVERS_SUBDIR = os.environ.get("DRIVERS_SUBDIR", "opentrons_drivers")
+DRIVERS_SUBDIR = os.environ.get("DRIVERS_SUBDIR", "drivers")
 
 #: Backend endpoints the maintainer calls.
 TOKEN_PATH = "/internal/update/token"

@@ -64,8 +64,8 @@ services:
     environment:
       BACKEND_URL: "http://backend:8000"
       GITHUB_REPO: ${GITHUB_REPO:?set GITHUB_REPO in .env}
-      GIT_REF: ${DRIVERS_GIT_REF:-main}
-      DRIVERS_SUBDIR: ${DRIVERS_SUBDIR:-opentrons_drivers}
+      DRIVERS_GIT_REF: ${DRIVERS_GIT_REF:-main}
+      DRIVERS_SUBDIR: ${DRIVERS_SUBDIR:-drivers}
     volumes:
       - maint_data:/data
     depends_on:
