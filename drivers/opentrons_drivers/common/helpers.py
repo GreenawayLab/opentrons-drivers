@@ -5,6 +5,7 @@ from typing import Dict, List
 from opentrons_drivers.common.custom_types import StockWell, CoreWell
 from typing import Dict, Callable, TypeVar
 import time
+import re
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -200,3 +201,81 @@ def midpoint(fr: Well, to: Well) -> Location:
     # Return as Location object
     mid = Point(mid_x, mid_y, mid_z)
     return Location(mid, None)
+
+
+#---------- Multichannel addressing helpers ----------
+#
+# The one invariant behind every action: a multichannel pipette addresses
+# a whole COLUMN anchored at row A. Command it to any other row and the front
+# nozzle lands on target while the rest hang off the labware edge and crash. So
+# every action that aims the pipette at a specific well must, for channels > 1,
+# target row A and understand it is touching the whole column, not one well. A
+# single-channel pipette (channels == 1) is unrestricted, so these helpers are
+# no-ops for it and every single-channel path is preserved exactly.
+
+
+def _split_label(label: str) -> tuple[str, str]:
+    """Split a well label into (row_letters, column_digits), e.g. 'A1' -> ('A', '1').
+
+    :param label: A well label such as ``"A1"`` or ``"H12"``.
+    :returns: The row-letter prefix and the column-digit suffix.
+    :raises RuntimeError: if the label is not <letters><digits>.
+    """
+    parsed = re.fullmatch(r"([A-Za-z]+)(\d+)", label)
+    if parsed is None:
+        raise RuntimeError(f"cannot parse well label '{label}'")
+    return parsed.group(1), parsed.group(2)
+
+
+def require_multichannel_anchor(label: str, channels: int) -> None:
+    """Reject a multichannel pipette aimed at a non-row-A well.
+
+    A no-op for single-channel pipettes. For a multichannel one, the target must
+    be a row-A anchor or the motion would put most nozzles off the labware.
+
+    :param label: The well label the pipette is being aimed at.
+    :param channels: The pipette channel count (``pipette.channels``).
+    :raises RuntimeError: if channels > 1 and the label is not in row A.
+    """
+    if channels > 1:
+        row, _ = _split_label(label)
+        if row != "A":
+            raise RuntimeError(
+                f"a {channels}-channel pipette must target row A, but got well '{label}'"
+            )
+
+
+def resolve_column(anchor: Well, channels: int) -> list[Well]:
+    """Return the physical wells a pipette engages when it targets ``anchor``.
+
+    A single-channel pipette (``channels == 1``) touches only the anchor well, so
+    the anchor is returned unchanged and every single-channel path is preserved
+    exactly. A multi-channel pipette addresses a whole column anchored at row A:
+    the returned list is that column, top to bottom, and must contain exactly
+    ``channels`` wells.
+
+    Only plates whose column length equals the channel count are supported here.
+    A 384-well plate addresses every other well (a different resolution), and any
+    other mismatch means an incompatible pipette or plate reached the agent, so
+    both raise rather than being silently mis-resolved into a crash on the deck.
+
+    :param anchor: The well the transfer targets. For a multi-channel pipette this
+        must be a row-A well.
+    :param channels: The pipette channel count, i.e. ``pipette.channels``.
+    :returns: The ``channels`` wells engaged, in physical top-to-bottom order.
+    :raises RuntimeError: if a multi-channel anchor is not in row A, or its column
+        does not hold exactly ``channels`` wells.
+    """
+    if channels == 1:
+        return [anchor]
+
+    require_multichannel_anchor(anchor.well_name, channels)
+    _, column_name = _split_label(anchor.well_name)
+
+    column = anchor.parent.columns_by_name()[column_name]
+    if len(column) != channels:
+        raise RuntimeError(
+            f"a {channels}-channel pipette needs a column of {channels} wells, but "
+            f"column {column_name} of '{anchor.parent}' has {len(column)}"
+        )
+    return column

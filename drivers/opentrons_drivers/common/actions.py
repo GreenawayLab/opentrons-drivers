@@ -26,27 +26,38 @@ register_action = help.make_registry_decorator(ACTION_REGISTRY)
 
 """
 
+
 @register_action("transfer_execution")
 def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """
     Perform a liquid transfer and update bookkeeping.
 
-    Modes:
-        1. Stock → Core:
-            - source == ["substance_name"]
-            - Validates stock volume, updates `stock_amounts` and `core_amounts`.
+    Works for any channel count. A single-channel pipette moves one source well to
+    one receiver well (the original behaviour, preserved exactly). A multi-channel
+    pipette targets a row-A anchor and engages the whole column: the same single
+    ``transfer_fn`` call runs the motion (the pipette drives the column), and the
+    bookkeeping fans out over the ``n = pipette.channels`` wells the column holds.
+    ``amount`` is the per-well volume, applied uniformly to every well in the
+    column, so a stock source depletes by ``amount * n``.
 
-        2. Core → Core:
+    Modes:
+        1. Stock -> Core:
+            - source == ["substance_name"]
+            - Validates stock volume for the aggregate over all channels, then
+              updates `stock_amounts` once and every receiver well.
+
+        2. Core -> Core:
             - source == ["core_plate", "well_label"]
-            - Validates both wells, updates `core_amounts`.
+            - Validates both columns, then updates `core_amounts` per channel,
+              pairing source well i to receiver well i.
 
     Parameters:
         ctx (StaticCtx): Device state (pipettes, volumes, plates).
         arg (dict[str, JSONType]): Instruction arguments.
             - source: list[str]
-            - receiver: list[str]
-            - amount: float
-            - method: str = "_liquid_transfer"
+            - receiver: list[str]           (multi-channel: a row-A anchor)
+            - amount: float                 (per receiver well)
+            - method: str
             - pipette_mount: str = "left"
             - swell_time: float = 0.0
             - swell_cycle: int = 1
@@ -63,12 +74,17 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     core_amounts = ctx["core_amounts"]
     stock_amounts = ctx["stock_amounts"]
 
-    # strongly typed payload 
+    # How many physical wells one motion touches. 1 for single-channel (the
+    # original path), 8 for an 8-channel, etc. The pipette object is authoritative,
+    # so the payload never carries this.
+    n = pipette.channels
+
+    # strongly typed payload
     source   = cast(list[str],  arg["source"])
     receiver = cast(list[str],  arg["receiver"])
     amount   = cast(float,      arg["amount"])
 
-    method = cast(str, arg.get("method", "liquid_transfer"))
+    method = cast(str, arg.get("method", "basic_liquid_transfer"))
     tips_raw = arg.get("tip_cycle", (True, True))
 
     if not (
@@ -85,12 +101,12 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
     # extra kwargs for specialised methods
     extra = {
-    k: v for k, v in arg.items()
-    if k not in {
-        "source", "receiver", "amount", "method",
-        "pipette_mount", "swell_time", "swell_cycle", "tip_cycle"
-                }
-            }
+        k: v for k, v in arg.items()
+        if k not in {
+            "source", "receiver", "amount", "method",
+            "pipette_mount", "swell_time", "swell_cycle", "tip_cycle",
+        }
+    }
 
     # get low-level transfer function
     transfer_fn = LIQUID_METHODS.get(method)
@@ -98,67 +114,83 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         raise ValueError(f"Unknown transfer method '{method}'. "
                          f"Available: {list(LIQUID_METHODS)}")
 
-    # prep tip
+    # prep tip (a multi-channel pick_up_tip grabs a whole column of tips)
     if tip_on:
         pipette.pick_up_tip()
 
-    # receiver objects
+    # Receiver: the anchor well drives the motion; the column it resolves to is
+    # what the bookkeeping fans out over. For n == 1 this is just [anchor], so the
+    # single validation call below is identical to the original.
     recv_data: CoreWell = core_amounts[receiver[0]][receiver[1]]
-    recv_well: Well     = recv_data["position"]
-    help.well_validation(core_amounts, receiver, amount, "receiver")
+    recv_anchor: Well = recv_data["position"]
+    recv_column = help.resolve_column(recv_anchor, n)
+    for w in recv_column:
+        help.well_validation(core_amounts, [receiver[0], w.well_name], amount, "receiver")
 
-    # STOCK → CORE 
+    # STOCK -> CORE
     if len(source) == 1:
         sub_name = source[0]
 
-        help.stock_validation(stock_amounts, sub_name, amount, pipette.min_volume)
+        # One motion aspirates `amount` per channel from a single stock well, so
+        # that well must hold the aggregate. stock_validation rolls to the next
+        # well of this substance if the front is short and never splits a draw,
+        # which is exactly right for a column aspiration from one reservoir well.
+        help.stock_validation(stock_amounts, sub_name, amount * n, pipette.min_volume)
 
         stock_entry = stock_amounts[sub_name][0]
         stock_well: Well = stock_entry["position"]
 
-        if swell_time > 0: # passive swell
+        if swell_time > 0:  # passive swell
             help.swell_tip(pipette, stock_amounts, core_amounts, [sub_name], seconds=swell_time)
 
-        if swell_cycle > 1: # active swell
+        if swell_cycle > 1:  # active swell
             help.swell_tip(pipette, stock_amounts, core_amounts, [sub_name], cycles=swell_cycle)
 
         transfer_fn(pipette=pipette,
-                    to=recv_well,
+                    to=recv_anchor,
                     fr=stock_well,
                     amount=amount,
                     **extra)
 
-        # bookkeeping
-        stock_entry["volume"]   -= amount
-        recv_data["volume"]     += amount
+        # bookkeeping: one aggregate stock debit, one credit per receiver well
+        stock_entry["volume"] -= amount * n
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        recv_data["substance"][timestamp] = (sub_name, stock_well.well_name, amount)
+        for w in recv_column:
+            rd = core_amounts[receiver[0]][w.well_name]
+            rd["volume"] += amount
+            rd["substance"][timestamp] = (sub_name, stock_well.well_name, amount)
 
-    # CORE → CORE 
+    # CORE -> CORE
     elif len(source) == 2:
         src_data: CoreWell = core_amounts[source[0]][source[1]]
-        src_well: Well     = src_data["position"]
+        src_anchor: Well = src_data["position"]
+        src_column = help.resolve_column(src_anchor, n)
+        for w in src_column:
+            help.well_validation(core_amounts, [source[0], w.well_name], amount, "source")
 
-        help.well_validation(core_amounts, source,   amount, "source")
-
-        if swell_time > 0: # passive swell
+        if swell_time > 0:  # passive swell
             help.swell_tip(pipette, stock_amounts, core_amounts, source, seconds=swell_time)
 
-        if swell_cycle > 1: # active swell
+        if swell_cycle > 1:  # active swell
             help.swell_tip(pipette, stock_amounts, core_amounts, source, cycles=swell_cycle)
 
         transfer_fn(pipette=pipette,
-                    to=recv_well,
-                    fr=src_well,
+                    to=recv_anchor,
+                    fr=src_anchor,
                     amount=amount,
                     **extra)
 
-        # bookkeeping
-        src_data["volume"]  -= amount
-        recv_data["volume"] += amount
+        # bookkeeping: channel i moves source-column well i into receiver-column
+        # well i. Volumes are uniform across the column, so the pairing is by
+        # physical order (columns_by_name returns both top-to-bottom).
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        recv_data["substance"][timestamp] = (source[0], source[1], amount)
-        src_data["substance"][timestamp]  = (receiver[0], receiver[1], -amount)
+        for sw, rw in zip(src_column, recv_column):
+            sd = core_amounts[source[0]][sw.well_name]
+            rd = core_amounts[receiver[0]][rw.well_name]
+            sd["volume"] -= amount
+            rd["volume"] += amount
+            rd["substance"][timestamp] = (source[0], sw.well_name, amount)
+            sd["substance"][timestamp] = (receiver[0], rw.well_name, -amount)
 
     else:
         raise ValueError("`source` must be ['substance'] or ['plate', 'well'].")
@@ -167,7 +199,7 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         pipette.drop_tip()
 
     state = ctx["system_state"]
-    # receiver always defines the new "location"
+    # the receiver anchor always defines the new "location"
     state["plate"] = receiver[0]
     state["well"] = receiver[1]
     state["last_action"] = "transfer"
@@ -175,10 +207,21 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
     return True
 
+
 @register_action("sampler_action")
 def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
-    pip = ctx["pipettes"][arg.get("sampler_mount", "left")]
+    sampler_mount = cast(str, arg.get("sampler_mount", "left"))
+    pip = ctx["pipettes"][sampler_mount]
     state = ctx["system_state"]
+
+    # The sampler probes individual wells, which is only coherent one channel at a
+    # time: a multichannel engages a whole column and cannot address any well
+    # outside row A. Fail fast rather than crash on the first non-row-A move.
+    if pip.channels != 1:
+        raise RuntimeError(
+            f"sampler_action needs a single-channel pipette on mount "
+            f"'{sampler_mount}', but it holds a {pip.channels}-channel pipette"
+        )
 
     mode = arg.get("mode")
     if mode not in {"scan", "wash", "lift"}:
@@ -257,11 +300,12 @@ def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
         return True
 
+
 @register_action("test_action")
 def test_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """
     Smoke test: move pipette to deck-safe coordinates and back, then home.
-    
+
     Proves: HTTP → slot → protocol thread → Opentrons API → motors path
     is alive end-to-end. Does NOT touch tips, wells, or any labware.
 
@@ -374,6 +418,9 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     set_tiprack_offset, and retries until pickup is clean. Any previously held
     tip is returned first.
 
+    A multichannel pipette picks up a whole column of tips anchored at ``well``,
+    so ``well`` must be a row-A anchor, checked up front rather than crashed into.
+
     Parameters:
         arg["slot"] (str): deck slot holding the tiprack.
         arg["well"] (str): which tip to try, default "A1". A central well is a
@@ -383,6 +430,7 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     pipette_mount = cast(str, arg.get("pipette_mount", "left"))
     pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
     well_label = cast(str, arg.get("well", "A1"))
+    help.require_multichannel_anchor(well_label, pipette.channels)
 
     rack = _tiprack_in_slot(pipette, cast(str, arg["slot"]))
     if pipette.has_tip:
@@ -416,14 +464,21 @@ def set_tiprack_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
 @register_action("calibration_plate")
 def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
-    """Pick up a tip and visit a core plate's three corners, then return the tip.
+    """Pick up a tip (or a column of tips) and visit representative plate points.
 
-    Visits A1 (top left), the bottom-left corner, and the top-right corner, so
-    the three points let the user judge the plate plane under the current offset.
-    The user adjusts with set_offset and retries until happy. Corners are
-    computed from the labware, so the caller needs no well labels. The plate is
-    reached through core_amounts and the tiprack through the pipette, so no robot
-    handle is needed.
+    Single-channel: visits three corners — A1 (top left), the bottom-left corner,
+    and the top-right corner — so the three points let the user judge the plate
+    plane under the current offset.
+
+    Multichannel: a column pipette cannot touch the bottom-left corner (its
+    nozzles already span the column from a row-A anchor, and any non-row-A target
+    hangs tips off the edge). Instead it visits the row-A anchor of the first,
+    middle, and last columns. Each visit engages the whole column, so the vertical
+    span is covered at three horizontal positions, which is the plane check a
+    multichannel can actually perform.
+
+    Tips are picked up the same way in both cases (a multichannel pick_up_tip
+    grabs the whole tip column anchored at ``tip_well``, which must be row A).
 
     Parameters:
         arg["plate"] (str): core plate name.
@@ -438,6 +493,8 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     tip_well = cast(str, arg.get("tip_well", "A1"))
     clearance = cast(float, arg.get("clearance", 0.0))
 
+    help.require_multichannel_anchor(tip_well, pipette.channels)
+
     wells = ctx["core_amounts"].get(plate_name)
     if not wells:
         raise ValueError(f"unknown core plate '{plate_name}' for calibration")
@@ -445,12 +502,19 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     rack = _tiprack_in_slot(pipette, cast(str, arg["tip_slot"]))
 
     columns = plate.columns()
-    corners: list[Well] = [columns[0][0], columns[0][-1], columns[-1][0]]
+    if pipette.channels == 1:
+        # three point corners: top-left, bottom-left, top-right
+        targets: list[Well] = [columns[0][0], columns[0][-1], columns[-1][0]]
+    else:
+        # first, middle, last columns, each at its row-A anchor; the column span
+        # covers the vertical extent, so no separate bottom corner is visited
+        mid = len(columns) // 2
+        targets = [columns[0][0], columns[mid][0], columns[-1][0]]
 
     if pipette.has_tip:
         pipette.return_tip()
     pipette.pick_up_tip(rack[tip_well])
-    for well in corners:
+    for well in targets:
         pipette.move_to(well.top(clearance))
     pipette.return_tip()
     return True
