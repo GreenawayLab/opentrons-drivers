@@ -520,6 +520,18 @@ async def runs_open(request: Request) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.get("/user/runs")
+async def runs_list(request: Request) -> Response:
+    r = await call_backend(request, "GET", "/runs")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/user/runs/{run_id}/detail")
+async def runs_detail(request: Request, run_id: str) -> Response:
+    r = await call_backend(request, "GET", f"/runs/{run_id}/detail")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/user/runs/{run_id}")
 async def runs_status(request: Request, run_id: str) -> Response:
     r = await call_backend(request, "GET", f"/runs/{run_id}")

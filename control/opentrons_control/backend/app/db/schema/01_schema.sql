@@ -66,6 +66,9 @@ CREATE TABLE secrets (
 -- The provenance FKs are RESTRICT-on-delete by default, which is intended:
 -- users are soft-deleted (never hard-deleted), and blocking a hard delete of a
 -- user who authored labware is the correct audit behaviour.
+-- Custom labware carries its own type: an Opentrons definition declares
+-- metadata.displayCategory (tipRack, wellPlate, reservoir), so the kind is read
+-- from the JSON rather than stored beside it and allowed to disagree.
 CREATE TABLE labware (
     name        TEXT        PRIMARY KEY,
     definition  JSONB       NOT NULL,
@@ -134,8 +137,12 @@ CREATE TABLE user_invites (
 -- trace who added a bad string to everyone's dropdown.
 CREATE TABLE standard_units (
     name        TEXT        PRIMARY KEY,
+    -- category is the kind. A standard unit is only a name, with no definition
+    -- to inspect, so this column is the sole thing telling a tiprack apart from
+    -- a plate or a hardware module. Extend the CHECK when new kinds land.
     category    TEXT        NOT NULL
-                CONSTRAINT standard_units_category_check CHECK (category IN ('module', 'pipette')),
+                CONSTRAINT standard_units_category_check
+                CHECK (category IN ('pipette', 'module', 'tiprack', 'plate', 'reservoir')),
     created_by  BIGINT      CONSTRAINT standard_units_created_by_fkey REFERENCES users (id),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

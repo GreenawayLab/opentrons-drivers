@@ -31,6 +31,7 @@ that land with user/group management.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -62,10 +63,27 @@ router = APIRouter(prefix="/deck")
 # -------------------- wire models --------------------
 
 
+TIPRACK_NAME_RE = re.compile(r"^tiprack_\d+$")
+
+#: Kinds a deck entry can have. Standard units store this directly as their
+#: category; custom labware has it read out of the definition JSON.
+LABWARE_KINDS = ("pipette", "module", "tiprack", "plate", "reservoir")
+
+#: Opentrons definitions declare metadata.displayCategory. Only tipRack changes
+#: behaviour today, so everything else falls back to a plain plate.
+_DISPLAY_CATEGORY_KINDS = {"tipRack": "tiprack", "reservoir": "reservoir"}
+
+
+def kind_from_definition(display_category: str | None) -> str:
+    """Map an Opentrons displayCategory onto our labware kind."""
+    return _DISPLAY_CATEGORY_KINDS.get(display_category or "", "plate")
+
+
 class LabwareSummary(BaseModel):
     """A labware library entry for listing."""
 
     name: str
+    kind: str = "plate"
     well_count: int
     created_at: Any
 
@@ -74,6 +92,7 @@ class LabwareDetail(BaseModel):
     """A labware entry with its full definition and derived well list."""
 
     name: str
+    kind: str = "plate"
     definition: dict[str, Any]
     wells: list[str]
 
@@ -145,7 +164,7 @@ class StandardUnitInfo(BaseModel):
 
 class AddStandardUnitRequest(BaseModel):
     name: str
-    category: Literal["module", "pipette"]
+    category: Literal["pipette", "module", "tiprack", "plate", "reservoir"]
 
 
 def _gate(user: CurrentUser, db: Session, permission: str) -> None:
@@ -165,7 +184,10 @@ def list_labware(
     """List the labware library."""
     return [
         LabwareSummary(
-            name=r["name"], well_count=r["well_count"], created_at=r["created_at"]
+            name=r["name"],
+            kind=kind_from_definition(r["display_category"]),
+            well_count=r["well_count"],
+            created_at=r["created_at"],
         )
         for r in fetch(db, "labware/list.sql")
     ]
@@ -182,7 +204,12 @@ def get_labware(
     if row is None:
         raise HTTPException(status_code=404, detail=f"unknown labware '{name}'")
     definition = row["definition"]
-    return LabwareDetail(name=row["name"], definition=definition, wells=labware_wells(definition))
+    return LabwareDetail(
+        name=row["name"],
+        kind=kind_from_definition((definition.get("metadata") or {}).get("displayCategory")),
+        definition=definition,
+        wells=labware_wells(definition),
+    )
 
 
 @router.post("/labware")
@@ -300,6 +327,55 @@ def config_versions(
     return [VersionInfo(**r) for r in fetch(db, "deck_configs/versions.sql", {"id": config_id})]
 
 
+def _check_labware_kinds(db: Session, config: BaseConfig) -> None:
+    """Reject a config where labware kind and plate name disagree.
+
+    The agent selects tipracks by the ``tiprack_N`` name prefix, so the name is
+    load bearing rather than cosmetic. Enforcing both directions here catches
+    the two mistakes that only surface on hardware: a tiprack given a free name
+    (so it is never attached to the pipette) and an ordinary plate named like a
+    tiprack (so it silently drops out of liquid accounting).
+
+    Which group a tiprack sits in is deliberately not policed. The agent loads
+    support labware from core_plates and stock_plates alike, and the simulator
+    skips tipracks in both, so either placement is valid.
+
+    :raises HTTPException: with the first disagreement found.
+    """
+    kinds = {
+        r["name"]: kind_from_definition(r["display_category"])
+        for r in fetch(db, "labware/kinds.sql")
+    }
+    # standard units are only names, so their stored category is the only signal
+    kinds.update({r["name"]: r["category"] for r in fetch(db, "standard_units/list.sql")})
+    for plates in (config.core_plates, config.stock_plates):
+        for plate_name, info in plates.items():
+            kind = kinds.get(info.type)
+            is_tiprack_name = plate_name.startswith("tiprack_")
+            if kind == "tiprack":
+                if not TIPRACK_NAME_RE.match(plate_name):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"'{plate_name}' uses tiprack labware so it must be named "
+                            f"tiprack_N, otherwise the robot will not attach it"
+                        ),
+                    )
+                if info.content:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"tiprack '{plate_name}' cannot hold liquid contents",
+                    )
+            elif is_tiprack_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"'{plate_name}' is named like a tiprack but '{info.type}' is "
+                        f"{kind or 'unknown'} labware, so it would be skipped as support labware"
+                    ),
+                )
+
+
 @router.post("/configs")
 def save_config(
     req: SaveConfigRequest,
@@ -315,6 +391,7 @@ def save_config(
     blank new config (no base_id) starts a fresh family at 1.0.0.
     """
     _gate(user, db, "add_config")
+    _check_labware_kinds(db, req.config)
     available = {r["name"] for r in fetch(db, "labware/list.sql")}
     missing = custom_labware_refs(req.config) - available
     if missing:

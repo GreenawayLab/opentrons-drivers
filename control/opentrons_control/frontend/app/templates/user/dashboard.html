@@ -4,6 +4,7 @@
   {% include "user/_tabs.html" %}
 
   <div id="msg"></div>
+  <div id="resume-banner" style="display:none"></div>
 
   <section id="launch">
     <h2>Run a plan</h2>
@@ -26,7 +27,7 @@
       <div id="cal-tiprack" class="cal-phase">
         <h3>1 · Tiprack pickup</h3>
         <p class="muted" style="font-size:12px">Try picking up a tip. If it misaligns, adjust the rack offset and retry until pickup is clean.</p>
-        <label>Rack index <input id="tr-index" type="number" value="0" style="width:50px"></label>
+        <label>Tiprack <select id="tr-slot"></select></label>
         <label>Tip well <input id="tr-well" value="A1" style="width:60px"></label>
         <button id="btn-tr-try">Try pickup</button>
         <div style="margin-top:6px">offset:
@@ -81,6 +82,9 @@
   #msg .error, #run-error { color: #a32d2d; }
   button.danger { color: #a32d2d; }
   .proc { color: #b7791f; }
+  #resume-banner { background: #fff6e5; border: 1px solid #e5c07b; border-radius: 6px;
+                   padding: 10px 12px; margin: 12px 0; }
+  #resume-banner .run-line { margin: 4px 0; }
   #run-commands { font-family: monospace; font-size: 12px; max-height: 280px; overflow: auto;
                   padding-left: 28px; margin: 10px 0; }
   #run-commands li { padding: 2px 4px; color: #999; }
@@ -125,6 +129,51 @@ async function loadRunOptions() {
     : `<option value="">no plans</option>`;
 }
 
+// A detail payload carries everything the page needs to render a run, so the
+// same function serves a fresh launch and a reattach after a page reload.
+function applyRunDetail(d) {
+  document.getElementById("ready-plan").textContent = d.plan_name || "";
+  document.getElementById("ready-robot").textContent = d.robot_id || "";
+  document.getElementById("pl-plate").innerHTML = (d.plates || [])
+    .map(p => `<option value="${p.name}">${p.name} (slot ${p.slot})</option>`).join("")
+    || `<option value="">no plates</option>`;
+  document.getElementById("tr-slot").innerHTML = (d.tipracks || [])
+    .map(r => `<option value="${r.slot}">${r.name} (slot ${r.slot})</option>`).join("")
+    || `<option value="">no tipracks in this config</option>`;
+}
+
+// ---- reattach: the process still owns the run, only the page forgot it ----
+const LIVE = ["booking", "ready", "running", "paused"];
+async function checkActiveRuns() {
+  let runs = [];
+  try { runs = await api("GET", "/user/runs"); } catch (_) { return; }
+  const live = runs.filter(r => LIVE.includes(r.status));
+  const box = document.getElementById("resume-banner");
+  if (!live.length) { box.style.display = "none"; return; }
+  box.innerHTML = `<b>Run in progress</b>`
+    + live.map(r => `<div class="run-line">${r.plan_name || "(plan)"} on ${r.robot_id}
+        &middot; ${r.status} &middot; ${r.cursor}/${r.total}
+        ${r.owner ? `<span class="muted">by ${r.owner}</span>` : ""}
+        <button class="small" data-reattach="${r.run_id}">Reattach</button></div>`).join("");
+  box.style.display = "";
+}
+document.getElementById("resume-banner").addEventListener("click", async e => {
+  const id = e.target.dataset.reattach;
+  if (id) await reattach(id).catch(err => msg(err.message));
+});
+async function reattach(runId) {
+  const d = await api("GET", `/user/runs/${runId}/detail`);
+  run = d;
+  applyRunDetail(d);
+  document.getElementById("resume-banner").style.display = "none";
+  document.getElementById("cal").style.display = "none";
+  if (d.status === "booking") { show("ready"); setBooking(true); waitForReady(); }
+  else if (d.status === "ready") {
+    show("ready"); setBooking(false);
+    document.getElementById("ready-status").textContent = "Agent ready.";
+  } else { show("running"); poll(); }
+}
+
 // ---- submit / open ----
 document.getElementById("btn-submit").onclick = async () => {
   const robot = document.getElementById("run-robot").value;
@@ -133,10 +182,8 @@ document.getElementById("btn-submit").onclick = async () => {
   msg("");
   try {
     run = await api("POST", "/user/runs", { plan_id: Number(planSel.value), robot_id: robot });
-    document.getElementById("ready-plan").textContent = planSel.options[planSel.selectedIndex].text;
-    document.getElementById("ready-robot").textContent = robot;
-    document.getElementById("pl-plate").innerHTML = (run.plates || [])
-      .map(p => `<option value="${p.name}">${p.name} (${p.role})</option>`).join("");
+    applyRunDetail(run);
+    document.getElementById("resume-banner").style.display = "none";
     document.getElementById("cal").style.display = "none";
     show("ready");
     setBooking(true);
@@ -180,7 +227,8 @@ document.getElementById("btn-cancel").onclick = async () => {
 };
 
 // ---- phase 1: tiprack ----
-function trPayload() { return { rack_index: Number(document.getElementById("tr-index").value), well: document.getElementById("tr-well").value }; }
+function trSlot() { return document.getElementById("tr-slot").value; }
+function trPayload() { return { slot: trSlot(), well: document.getElementById("tr-well").value }; }
 document.getElementById("btn-tr-try").onclick = async () => {
   try { const r = await calibrate("calibration_tiprack", trPayload()); calResult("tr-note", "pickup", r); }
   catch (e) { note("tr-note", e.message, false); }
@@ -188,7 +236,7 @@ document.getElementById("btn-tr-try").onclick = async () => {
 document.getElementById("btn-tr-apply").onclick = async () => {
   trOffset = { x: Number(document.getElementById("tr-x").value), y: Number(document.getElementById("tr-y").value), z: Number(document.getElementById("tr-z").value) };
   try {
-    await calibrate("set_tiprack_offset", { rack_index: Number(document.getElementById("tr-index").value), ...trOffset });
+    await calibrate("set_tiprack_offset", { slot: trSlot(), ...trOffset });
     const r = await calibrate("calibration_tiprack", trPayload());
     calResult("tr-note", "offset applied, retried", r);
   } catch (e) { note("tr-note", e.message, false); }
@@ -203,7 +251,7 @@ function loadPlateOffset() {
 document.getElementById("pl-plate").onchange = loadPlateOffset;
 document.getElementById("btn-pl-cal").onclick = async () => {
   try {
-    const r = await calibrate("calibration_plate", { plate: document.getElementById("pl-plate").value, rack_index: Number(document.getElementById("tr-index").value) });
+    const r = await calibrate("calibration_plate", { plate: document.getElementById("pl-plate").value, tip_slot: trSlot() });
     calResult("pl-note", "visited corners", r);
   } catch (e) { note("pl-note", e.message, false); }
 };
@@ -213,7 +261,7 @@ document.getElementById("btn-pl-apply").onclick = async () => {
   plateOffsets[p] = off;
   try {
     await calibrate("set_offset", { plate: p, ...off });
-    const r = await calibrate("calibration_plate", { plate: p, rack_index: Number(document.getElementById("tr-index").value) });
+    const r = await calibrate("calibration_plate", { plate: p, tip_slot: trSlot() });
     calResult("pl-note", `applied to ${p}, revisited`, r);
   } catch (e) { note("pl-note", e.message, false); }
 };
@@ -274,5 +322,6 @@ document.getElementById("btn-abort").onclick = async () => {
 };
 
 loadRunOptions().catch(e => msg(e.message));
+checkActiveRuns();
 </script>
 {% endblock %}

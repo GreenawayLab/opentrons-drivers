@@ -18,6 +18,7 @@ fresh (keeps .env, so the Fernet vault key is preserved).
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -131,12 +132,15 @@ def main() -> None:
     )
 
     ip = host_ip()
-    print("Ready. Proxy listening on port 8080:")
-    print("  from this machine:     http://localhost:8080")
+    # port 80 is the default, and a browser never needs it spelled out
+    port = os.environ.get("PROXY_PORT", "80")
+    suffix = "" if port == "80" else f":{port}"
+    print(f"Ready. Proxy published on host port {port}:")
+    print(f"  from this machine:     http://localhost{suffix}")
     if ip:
-        print(f"  from another machine:  http://{ip}:8080")
+        print(f"  from another machine:  http://{ip}{suffix}")
     else:
-        print("  from another machine:  http://<this-host-ip>:8080  (e.g. `hostname -I`)")
+        print(f"  from another machine:  http://<this-host-ip>{suffix}  (e.g. `hostname -I`)")
 
 
 if __name__ == "__main__":

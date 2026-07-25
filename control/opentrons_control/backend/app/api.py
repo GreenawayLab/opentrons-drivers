@@ -37,6 +37,7 @@ from typing import AsyncIterator, Dict, Mapping, Optional, Any
 from pydantic import BaseModel, Field
 
 import asyncio
+from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
@@ -56,6 +57,7 @@ import opentrons_control.backend.app.settings.global_variables as gv
 from opentrons_control.backend.app.generator import plan_to_protocol
 from opentrons_control.backend.app.simulator import simulate
 from opentrons_control.backend.app.run import (
+    all_executors,
     Executor,
     Run,
     assemble_launch_files,
@@ -426,8 +428,35 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
                 labware_defs[plate.type] = row["definition"]
         files = assemble_launch_files(cfg_row["config"], labware_defs)
 
+        # Tipracks are support labware and may sit in either group, so both are
+        # scanned. They are absent from core_amounts, so they calibrate by deck
+        # slot rather than by name. Only core plates are calibratable by name,
+        # since that is what the agent can resolve; stock plates keep the offset
+        # set at authoring time.
+        all_plates = {**config.core_plates, **config.stock_plates}
+        plates = [
+            {"name": n, "slot": info.place}
+            for n, info in config.core_plates.items()
+            if not n.startswith("tiprack_")
+        ]
+        tipracks = [
+            {"name": n, "slot": info.place}
+            for n, info in all_plates.items()
+            if n.startswith("tiprack_")
+        ]
+
         run_id = new_run_id()
-        the_run = Run(run_id=run_id, robot_id=req.robot_id, stream=stream, status="booking")
+        the_run = Run(
+            run_id=run_id,
+            robot_id=req.robot_id,
+            stream=stream,
+            owner=user.name,
+            plan_name=plan["name"],
+            opened_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            plates=plates,
+            tipracks=tipracks,
+            status="booking",
+        )
         executor = Executor(the_run)
         register(executor)
 
@@ -464,16 +493,28 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
 
         asyncio.create_task(_book())
 
-        # only core plates are live-calibratable (reached by name via
-        # core_amounts). Stock plates keep the offset set at authoring time.
-        plates = [{"name": n, "role": "core"} for n in config.core_plates]
+        return _run_detail(executor)
+
+    def _run_detail(ex: Executor) -> dict[str, Any]:
+        """Status plus the frozen bits a page needs to render or reattach."""
         return {
-            "run_id": run_id,
-            "status": the_run.status,
-            "total": the_run.total,
-            "plates": plates,
-            "commands": [describe(s) for s in stream],
+            **ex.status(),
+            "commands": [describe(s) for s in ex.run.stream],
+            "plates": ex.run.plates,
+            "tipracks": ex.run.tipracks,
         }
+
+    @app.get("/runs")
+    async def list_runs(user: CurrentUser = Depends(get_current_user)) -> list[dict[str, Any]]:
+        """Runs this process knows about, newest first.
+
+        Users see their own, admins see everyone's. This is what lets a reloaded
+        page find a run it lost, and it is the seed of the oversight view.
+        """
+        items = [ex.status() for ex in all_executors()]
+        if user.role != "admin":
+            items = [i for i in items if i["owner"] == user.name]
+        return items
 
     def _run_or_404(run_id: str) -> Executor:
         ex = get_executor(run_id)
@@ -533,6 +574,11 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
         ex = _run_or_404(run_id)
         ex.resume()
         return ex.status()
+
+    @app.get("/runs/{run_id}/detail")
+    async def run_detail(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+        """Everything needed to rebuild the run view after a page reload."""
+        return _run_detail(_run_or_404(run_id))
 
     @app.get("/runs/{run_id}")
     async def run_status(run_id: str, user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:

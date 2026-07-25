@@ -77,9 +77,13 @@ function fillDatalist(id, values) {
   document.getElementById(id).innerHTML = values.map(v => `<option value="${v}">`).join("");
 }
 function unitsOf(cat) { return state.units.filter(u => u.category === cat).map(u => u.name); }
+// Every standard unit except a pipette can sit on the deck, so the labware
+// picker takes all of them. Filtering by a single category silently hides
+// tipracks, plates, and reservoirs.
+function deckUnits() { return state.units.filter(u => u.category !== "pipette").map(u => u.name); }
 // Slot labware = uploaded files + standard modules. Pipettes get their own list.
 function refreshDatalists() {
-  fillDatalist("labware-options", [...state.labware.map(l => l.name), ...unitsOf("module")]);
+  fillDatalist("labware-options", [...state.labware.map(l => l.name), ...deckUnits()]);
   fillDatalist("pipette-models", unitsOf("pipette"));
 }
 
@@ -135,6 +139,27 @@ function contentRows(p, kind, idx) {
 
 // For a file labware, pull its definition so we know the well list (apply-to-all)
 // and per-well capacity (max volume can only be set below it, defaulting to it).
+// The library entry's kind decides how the editor treats a plate. Tipracks are
+// support labware: the robot attaches them by the tiprack_N name, so the editor
+// assigns that name rather than trusting whatever someone types.
+function labwareKind(typeName) {
+  // custom labware carries its kind in the definition, standard units carry it
+  // as their declared category. Either way the editor never guesses from a name.
+  const lw = (state.labware || []).find(l => l.name === typeName);
+  if (lw) return lw.kind || "plate";
+  const unit = (state.units || []).find(u => u.name === typeName);
+  return unit ? unit.category : null;
+}
+function nextTiprackName(exclude) {
+  // both groups: a tiprack parked in the stock section still occupies the name
+  const used = new Set([...state.core, ...state.stock].filter(p => p !== exclude).map(p => p.name));
+  for (let n = 1; n < 50; n++) {
+    const candidate = `tiprack_${n}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return "tiprack_1";
+}
+
 async function applyLabwareDef(p, name) {
   p.wells = []; p.capacity = null;
   if (name && name.endsWith(".json")) {
@@ -148,19 +173,25 @@ async function applyLabwareDef(p, name) {
       }
     } catch (_) { /* unknown labware, leave without a def */ }
   }
+  if (labwareKind(name) === "tiprack") {
+    p.name = nextTiprackName(p);
+    p.content = [];
+    p.max_volume = "";
+  }
   renderPlates();
 }
 function plateCard(p, kind, idx) {
   const isCore = kind === "core";
   const isFile = (p.type || "").endsWith(".json");
+  const isTiprack = labwareKind(p.type) === "tiprack";
   const capHint = p.capacity != null ? ` <span class="cap">(def max ${p.capacity})</span>` : "";
-  const maxField = (isCore && isFile)
+  const maxField = (isCore && isFile && !isTiprack)
     ? `<label>max µL/well${capHint}<input type="number" value="${p.max_volume ?? ""}" ${p.capacity != null ? `max="${p.capacity}"` : ""} data-f="${kind}:${idx}:max_volume" placeholder="${p.capacity ?? 300}"></label>`
     : "";
   return `<div class="plate">
     <div class="row">
-      <label>name<input value="${p.name}" data-f="${kind}:${idx}:name" placeholder="${isCore ? "core1" : "stocks"}"></label>
-      <label>labware<input value="${p.type}" list="labware-options" data-f="${kind}:${idx}:type" placeholder="file.json or module"></label>
+      <label>labware<input value="${p.type}" list="labware-options" data-f="${kind}:${idx}:type" placeholder="pick a labware first"></label>
+      <label>name<input value="${p.name}" data-f="${kind}:${idx}:name" ${isTiprack ? "readonly title='tipracks are named automatically so the robot attaches them'" : ""} placeholder="${isCore ? "core1" : "stocks"}"></label>
       <label>slot<input value="${p.place}" data-f="${kind}:${idx}:place" placeholder="5"></label>
       ${maxField}
       <button class="small danger" data-delp="${kind}:${idx}">remove plate</button>
@@ -171,7 +202,11 @@ function plateCard(p, kind, idx) {
       <label>y<input type="number" value="${p.offset.y}" data-f="${kind}:${idx}:offy"></label>
       <label>z<input type="number" value="${p.offset.z}" data-f="${kind}:${idx}:offz"></label>
     </div>
-    ${isFile ? `<details open><summary class="muted" style="cursor:pointer">Well contents</summary>${contentRows(p, kind, idx)}</details>` : `<p class="muted no-content">Modules have no wells to fill.</p>`}
+    ${isTiprack
+        ? `<p class="muted no-content">Tiprack: holds no liquid, named automatically as ${p.name}.</p>`
+        : (isFile
+            ? `<details open><summary class="muted" style="cursor:pointer">Well contents</summary>${contentRows(p, kind, idx)}</details>`
+            : `<p class="muted no-content">Modules have no wells to fill.</p>`)}
   </div>`;
 }
 (() => {
@@ -207,7 +242,7 @@ function renderDeck() {
   const svgW = 3 * (W + GAP) - GAP, svgH = 4 * (H + GAP) - GAP;
   document.getElementById("deck-viz").innerHTML =
     `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${cells}</svg>`
-    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp;`;
+    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp; slot numbers match the OT-2 deck</div>`;
 }
 
 function renderPlates() {
@@ -283,7 +318,24 @@ function platesToConfig(list, isCore) {
   }
   return out;
 }
+// Plate names become the keys of core_plates and stock_plates, so a duplicate
+// does not merely look wrong: one plate overwrites the other and disappears.
+// The backend cannot catch this because the collision happens while the JSON is
+// built, before it is ever sent, so the check has to live here.
+function plateNameProblem() {
+  const seen = new Set();
+  for (const p of [...state.core, ...state.stock]) {
+    const name = (p.name || "").trim();
+    if (!name) return `a plate has no name (labware "${p.type || "not set"}")`;
+    if (seen.has(name)) return `two plates are both named "${name}", so one would overwrite the other`;
+    seen.add(name);
+  }
+  return null;
+}
+
 function buildConfig() {
+  const problem = plateNameProblem();
+  if (problem) throw new Error(problem);
   const pipettes = {};
   const l = document.getElementById("pip-left").value.trim();
   const r = document.getElementById("pip-right").value.trim();

@@ -10,21 +10,33 @@
   your group. Adding needs the add-labware permission, deleting is admin-only.</p>
 
   <section>
-    <h3>Custom plates (files)</h3>
+    <h3>Custom labware (files)</h3>
     <input type="file" id="lw-file" accept="application/json,.json">
     <button id="btn-upload">Upload</button>
+    <p class="muted" style="font-size:12px">Kind is read from the definition's displayCategory, so a custom
+    tiprack is recognised without anyone declaring it.</p>
     <table id="lw-custom">
-      <thead><tr><th>Name</th><th>Wells</th></tr></thead>
+      <thead><tr><th>Name</th><th>Kind</th><th>Wells</th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
 
   <section>
-    <h3>Standard modules</h3>
+    <h3>Standard labware and modules</h3>
+    <label>Kind
+      <select id="new-unit-kind">
+        <option value="tiprack">tiprack</option>
+        <option value="plate">plate</option>
+        <option value="reservoir">reservoir</option>
+        <option value="module">module</option>
+      </select>
+    </label>
     <input id="new-module" placeholder="opentrons_96_tiprack_300ul">
-    <button id="btn-add-module" class="small">+ add module</button>
+    <button id="btn-add-module" class="small">+ add</button>
+    <p class="muted" style="font-size:12px">A standard unit is only a name, so its kind has to be declared here.
+    Getting it right matters: the deck editor names tipracks tiprack_N, which is how the robot attaches them.</p>
     <table id="lw-modules">
-      <thead><tr><th>Name</th><th>Added by</th></tr></thead>
+      <thead><tr><th>Name</th><th>Kind</th><th>Added by</th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -68,11 +80,14 @@ async function loadLibrary() {
     api("GET", "/labware"), api("GET", "/standard-units"),
   ]);
   document.querySelector("#lw-custom tbody").innerHTML = labware.map(l =>
-    `<tr><td>${l.name}</td><td>${l.well_count}</td></tr>`).join("")
-    || `<tr><td colspan="2" class="muted">None.</td></tr>`;
+    `<tr><td>${l.name}</td><td>${l.kind || "plate"}</td><td>${l.well_count}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="muted">None.</td></tr>`;
   const rows = cat => units.filter(u => u.category === cat).map(u =>
     `<tr><td>${u.name}</td><td class="muted">${u.created_by_name || ""}</td></tr>`).join("");
-  document.querySelector("#lw-modules tbody").innerHTML = rows("module") || `<tr><td colspan="2" class="muted">None.</td></tr>`;
+  document.querySelector("#lw-modules tbody").innerHTML =
+    units.filter(u => u.category !== "pipette").map(u =>
+      `<tr><td>${u.name}</td><td>${u.category}</td><td class="muted">${u.created_by_name || ""}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="muted">None.</td></tr>`;
   document.querySelector("#lw-pipettes tbody").innerHTML = rows("pipette") || `<tr><td colspan="2" class="muted">None.</td></tr>`;
 }
 
@@ -85,15 +100,17 @@ async function uploadLabware() {
   catch (e) { msg(e.message, false); }
 }
 async function addUnit(category) {
-  const input = document.getElementById(category === "module" ? "new-module" : "new-pipette");
+  const isPipette = category === "pipette";
+  const input = document.getElementById(isPipette ? "new-pipette" : "new-module");
   const name = input.value.trim();
   if (!name) { msg("Enter a name first.", false); return; }
-  try { await api("POST", "/standard-units", { name, category }); input.value = ""; await loadLibrary(); }
+  const kind = isPipette ? "pipette" : document.getElementById("new-unit-kind").value;
+  try { await api("POST", "/standard-units", { name, category: kind }); input.value = ""; await loadLibrary(); }
   catch (e) { msg(e.message, false); }
 }
 
 document.getElementById("btn-upload").onclick = uploadLabware;
-document.getElementById("btn-add-module").onclick = () => addUnit("module");
+document.getElementById("btn-add-module").onclick = () => addUnit("standard");
 document.getElementById("btn-add-pipette").onclick = () => addUnit("pipette");
 
 loadLibrary().catch(e => msg(e.message, false));

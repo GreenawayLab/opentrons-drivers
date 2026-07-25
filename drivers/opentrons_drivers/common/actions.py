@@ -3,7 +3,7 @@ from typing import cast
 from opentrons_drivers.common.custom_types import ActionFn
 from opentrons_drivers.common.methods import LIQUID_METHODS
 from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
-from opentrons.protocol_api.labware import Well
+from opentrons.protocol_api.labware import Labware, Well
 from opentrons.types import Point, Location
 from opentrons.protocol_api.instrument_context import InstrumentContext
 import opentrons_drivers.common.helpers as help
@@ -350,6 +350,21 @@ def set_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     return True
 
 
+def _tiprack_in_slot(pipette: InstrumentContext, slot: str) -> Labware:
+    """Return the attached tiprack sitting in a deck slot.
+
+    Addressing by slot rather than by position in ``pipette.tip_racks`` because
+    the list order depends on config iteration order, which JSONB does not
+    preserve. A slot is what the chemist actually sees on the bench, so it is
+    both stable and unambiguous.
+    """
+    for rack in pipette.tip_racks:
+        if str(rack.parent) == str(slot):
+            return rack
+    occupied = ", ".join(str(r.parent) for r in pipette.tip_racks) or "none attached"
+    raise ValueError(f"no tiprack in deck slot {slot} (tipracks are in slots: {occupied})")
+
+
 @register_action("calibration_tiprack")
 def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """Try to pick up a tip from a tiprack then return it, to check its offset.
@@ -360,20 +375,16 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     tip is returned first.
 
     Parameters:
-        arg["rack_index"] (int): index into the loaded tip racks, default 0.
+        arg["slot"] (str): deck slot holding the tiprack.
         arg["well"] (str): which tip to try, default "A1". A central well is a
             representative check.
         arg["pipette_mount"] (str): defaults to "left".
     """
     pipette_mount = cast(str, arg.get("pipette_mount", "left"))
     pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
-    rack_index = cast(int, arg.get("rack_index", 0))
     well_label = cast(str, arg.get("well", "A1"))
 
-    racks = pipette.tip_racks
-    if rack_index >= len(racks):
-        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
-    rack = racks[rack_index]
+    rack = _tiprack_in_slot(pipette, cast(str, arg["slot"]))
     if pipette.has_tip:
         pipette.return_tip()
     pipette.pick_up_tip(rack[well_label])
@@ -385,21 +396,17 @@ def calibration_tiprack(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 def set_tiprack_offset(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """Apply a deck offset to one tiprack, overwriting its previous one.
 
-    Tipracks have no name in the config, so they are addressed by index into the
-    pipette's attached tip racks, unlike core plates. Absolute, like set_offset.
+    Tipracks are addressed by deck slot, not by config name, because the agent
+    attaches them to the pipette as a list. Absolute, like set_offset.
 
     Parameters:
-        arg["rack_index"] (int): index into the pipette's tip racks, default 0.
+        arg["slot"] (str): deck slot holding the tiprack.
         arg["pipette_mount"] (str): defaults to "left".
         arg["x"], arg["y"], arg["z"] (float): offset in millimetres, default 0.
     """
     pipette_mount = cast(str, arg.get("pipette_mount", "left"))
     pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
-    rack_index = cast(int, arg.get("rack_index", 0))
-    racks = pipette.tip_racks
-    if rack_index >= len(racks):
-        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
-    racks[rack_index].set_offset(
+    _tiprack_in_slot(pipette, cast(str, arg["slot"])).set_offset(
         x=cast(float, arg.get("x", 0.0)),
         y=cast(float, arg.get("y", 0.0)),
         z=cast(float, arg.get("z", 0.0)),
@@ -420,7 +427,7 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
 
     Parameters:
         arg["plate"] (str): core plate name.
-        arg["rack_index"] (int): tiprack to draw the tip from, default 0.
+        arg["tip_slot"] (str): deck slot of the tiprack to draw the tip from.
         arg["tip_well"] (str): which tip to use, default "A1".
         arg["pipette_mount"] (str): defaults to "left".
         arg["clearance"] (float): millimetres above each well top, default 0.
@@ -428,7 +435,6 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     pipette_mount = cast(str, arg.get("pipette_mount", "left"))
     pipette: InstrumentContext = ctx["pipettes"][pipette_mount]
     plate_name = cast(str, arg["plate"])
-    rack_index = cast(int, arg.get("rack_index", 0))
     tip_well = cast(str, arg.get("tip_well", "A1"))
     clearance = cast(float, arg.get("clearance", 0.0))
 
@@ -436,10 +442,7 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     if not wells:
         raise ValueError(f"unknown core plate '{plate_name}' for calibration")
     plate = next(iter(wells.values()))["position"].parent
-    racks = pipette.tip_racks
-    if rack_index >= len(racks):
-        raise ValueError(f"no tiprack at index {rack_index} (have {len(racks)})")
-    rack = racks[rack_index]
+    rack = _tiprack_in_slot(pipette, cast(str, arg["tip_slot"]))
 
     columns = plate.columns()
     corners: list[Well] = [columns[0][0], columns[0][-1], columns[-1][0]]

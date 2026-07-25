@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
@@ -103,6 +103,11 @@ class Run:
     run_id: str
     robot_id: str
     stream: list["Step"]
+    owner: str = ""
+    plan_name: str = ""
+    opened_at: str = ""
+    plates: list[dict[str, Any]] = field(default_factory=list)
+    tipracks: list[dict[str, Any]] = field(default_factory=list)
     cursor: int = 0
     status: str = "booking"  # booking | ready | running | paused | complete | failed | aborted | cancelled
     error: str | None = None
@@ -196,6 +201,9 @@ class Executor:
         return {
             "run_id": self.run.run_id,
             "robot_id": self.run.robot_id,
+            "owner": self.run.owner,
+            "plan_name": self.run.plan_name,
+            "opened_at": self.run.opened_at,
             "cursor": self.run.cursor,
             "total": self.run.total,
             "status": self.run.status,
@@ -307,6 +315,16 @@ _EXECUTORS: dict[str, Executor] = {}
 def register(executor: Executor) -> None:
     """Make an executor discoverable by run_id for status and control."""
     _EXECUTORS[executor.run.run_id] = executor
+
+
+def all_executors() -> list[Executor]:
+    """Every executor this process knows, newest first.
+
+    Backs the run listing: a browser reload loses the page's handle on a run,
+    but the process still holds it, so the user can reattach. Terminated runs
+    stay in the map so an admin can still see what happened.
+    """
+    return sorted(_EXECUTORS.values(), key=lambda e: e.run.opened_at, reverse=True)
 
 
 def get(run_id: str) -> Executor | None:
