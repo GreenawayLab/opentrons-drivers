@@ -93,6 +93,21 @@
         <div id="well-grid" class="grid"></div>
       </details>
       <p class="muted"><b id="sel-count">0</b> wells selected &middot; click = one, Ctrl-click = toggle, Shift-click = rectangle</p>
+      <div id="order-control" class="fill-tools" style="margin-top:8px">
+        <b>Fill order</b>
+        <label><input type="radio" name="ord-axis" id="ord-row" checked> row-major</label>
+        <label><input type="radio" name="ord-axis" id="ord-col"> column-major</label>
+        <label><input type="checkbox" id="ord-reverse"> reverse</label>
+        <label><input type="checkbox" id="ord-custom"> keep selection order</label>
+        <span class="muted">grid numbers show the fill sequence</span>
+      </div>
+      <details style="margin-top:8px">
+        <summary class="muted" style="cursor:pointer">Paste plate contents (JSON)</summary>
+        <p class="muted" style="margin:6px 0">Dict of well &rarr; {substance, volume}. Replaces the current selection; keys must be wells of this plate, and every entry needs a "volume".</p>
+        <textarea id="as-json" rows="6" style="width:100%;display:block;margin:6px 0;font-family:monospace" placeholder='{ "A1": {"substance": "DMSO", "volume": 5000} }'></textarea>
+        <button class="small" id="as-json-btn">apply JSON</button>
+        <span id="as-json-note" class="muted"></span>
+      </details>
     </div>
 
     <!-- move_core edge drawing -->
@@ -164,6 +179,8 @@
   .grid td { padding: 2px; text-align: center; vertical-align: middle; }
   .grid button.well { width: 40px; height: 26px; font-size: 10px; padding: 0; border: 1px solid #ccc; background: #fff; border-radius: 3px; cursor: pointer; }
   .grid button.well.sel { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+  .grid button.well.col { background: #bcd6ef; border-color: #7aa7d4; }
+  .grid button.well.nohead { color: #bbb; background: #fafafa; }
   .grid button.well.armed { background: #e0a030; color: #fff; border-color: #e0a030; }
   .grid button.well.used { background: #cfe8d8; border-color: #6bbf8a; }
   .grid input.vol { width: 42px; height: 24px; font-size: 10px; text-align: center; padding: 0; }
@@ -275,6 +292,51 @@ function gridHTML(g, cellFn) {
   return `<table>${head}${body}</table>`;
 }
 
+// ---------- multichannel (column) helpers ----------
+// A multichannel pipette addresses a whole column anchored at row A. In a
+// channels>1 step, selection snaps to column heads, and the column must be
+// exactly `channels` wells, mirroring the generator and agent so what the
+// chemist picks is what the robot can actually run.
+function stepChannels() {
+  if (!cfg || !cfg.pipettes || !editStep || !editStep.how) return 1;
+  let mount = editStep.how.pipette;
+  if (!mount || mount === "auto") mount = Object.keys(cfg.pipettes)[0];
+  const p = mount && cfg.pipettes[mount];
+  return (p && p.channels) ? p.channels : 1;
+}
+function colMembers(g, col) { return g.rows.map(r => g.byRC[r + "-" + col]).filter(Boolean); }
+function isHead(g, w) { const q = parseWell(w); return !!(q && q.row === g.rows[0]); }
+function headOf(g, w) { const q = parseWell(w); return q ? (g.byRC[g.rows[0] + "-" + q.col] || null) : null; }
+function sanitizeSelForChannels() {
+  const ch = stepChannels();
+  if (ch <= 1 || !editGrid) return;
+  const heads = new Set();
+  for (const w of editSel) {
+    const head = headOf(editGrid, w);
+    if (head && colMembers(editGrid, parseWell(head).col).length === ch) heads.add(head);
+  }
+  editSel = heads;
+  editStep.wells = [...editSel];
+  for (const k of Object.keys(editStep.assignments || {})) if (!editSel.has(k)) delete editStep.assignments[k];
+}
+function sanitizeEdgesForChannels() {
+  const ch = stepChannels();
+  if (ch <= 1 || !srcGrid || !dstGrid) return;
+  const seen = new Set();
+  const out = [];
+  for (const e of editStep.edges) {
+    const sh = headOf(srcGrid, e.src), dh = headOf(dstGrid, e.dst);
+    if (!sh || !dh) continue;
+    if (colMembers(srcGrid, parseWell(sh).col).length !== ch) continue;
+    if (colMembers(dstGrid, parseWell(dh).col).length !== ch) continue;
+    const key = sh + ">" + dh;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ src: sh, dst: dh, volume: e.volume });
+  }
+  editStep.edges = out;
+}
+
 // ---------- editor state ----------
 let editStep = null, editMode = "select";
 let editGrid = null, editSel = new Set(), editAnchor = null;   // add_stock
@@ -332,7 +394,7 @@ function renderHow() {
     <p class="muted" style="font-size:11px">${specParams.length ? "Enter the parameters for this method." : "This method has no parameters."}</p>`;
   document.getElementById("how-method").onchange = e => { editStep.how.method = e.target.value; editStep.how.params = {}; renderHow(); };
   document.getElementById("how-tip").onchange = e => { editStep.how.tip = e.target.value; };
-  document.getElementById("how-pipette").onchange = e => { editStep.how.pipette = e.target.value; };
+  document.getElementById("how-pipette").onchange = e => { editStep.how.pipette = e.target.value; renderEditor(); };
   document.querySelectorAll("#how-params [data-hp]").forEach(inp => {
     const handler = e => {
       const key = e.target.dataset.hp, dt = e.target.dataset.dt;
@@ -374,8 +436,54 @@ function renderEditor() {
 function renderWellGrid() {
   const box = document.getElementById("well-grid");
   if (!editGrid) { box.innerHTML = `<p class="muted">Pick a destination plate.</p>`; return; }
-  box.innerHTML = gridHTML(editGrid, w => `<button class="well ${editSel.has(w) ? "sel" : ""}" data-well="${w}">${w}</button>`);
-  document.getElementById("sel-count").textContent = editSel.size;
+  const ch = stepChannels();
+  if (ch > 1) sanitizeSelForChannels();
+  const inCol = new Set();
+  if (ch > 1) for (const head of editSel) { const q = parseWell(head); if (q) colMembers(editGrid, q.col).forEach(x => inCol.add(x)); }
+  const seq = effectiveOrder([...editSel], editStep.order);
+  const pos = new Map(seq.map((w, i) => [w, i + 1]));
+  const label = w => editSel.has(w) ? `${w}<sup>${pos.get(w)}</sup>` : w;
+  box.innerHTML = gridHTML(editGrid, w => {
+    if (ch > 1) {
+      const cls = editSel.has(w) ? "sel" : (inCol.has(w) ? "col" : (isHead(editGrid, w) ? "" : "nohead"));
+      return `<button class="well ${cls}" data-well="${w}">${label(w)}</button>`;
+    }
+    return `<button class="well ${editSel.has(w) ? "sel" : ""}" data-well="${w}">${label(w)}</button>`;
+  });
+  document.getElementById("sel-count").textContent = ch > 1 ? `${editSel.size} column(s)` : editSel.size;
+  renderOrderControl();
+}
+
+// mirror of the generator's _ordered_wells, so the numbered preview matches the
+// stream the checker and robot will run. custom -> honor selection order;
+// otherwise sort by axis (row/col-major) and direction.
+function effectiveOrder(wells, order) {
+  order = order || {};
+  if (order.custom) return [...wells];
+  const axis = order.axis || "row";
+  const rev = !!order.reverse;
+  const keyed = wells.map(w => {
+    const q = parseWell(w) || { row: w, col: 0 };
+    return { w, k: axis === "row" ? [q.row, q.col] : [q.col, q.row] };
+  });
+  keyed.sort((a, b) => {
+    const c = (a.k[0] < b.k[0] ? -1 : a.k[0] > b.k[0] ? 1 : 0)
+           || (a.k[1] < b.k[1] ? -1 : a.k[1] > b.k[1] ? 1 : 0);
+    return rev ? -c : c;
+  });
+  return keyed.map(x => x.w);
+}
+
+function renderOrderControl() {
+  const o = editStep.order || (editStep.order = { axis: "row", reverse: false, custom: false });
+  document.getElementById("ord-row").checked = o.axis !== "col";
+  document.getElementById("ord-col").checked = o.axis === "col";
+  document.getElementById("ord-reverse").checked = !!o.reverse;
+  document.getElementById("ord-custom").checked = !!o.custom;
+  // axis and direction don't apply to an explicit (custom) order
+  document.getElementById("ord-row").disabled = !!o.custom;
+  document.getElementById("ord-col").disabled = !!o.custom;
+  document.getElementById("ord-reverse").disabled = !!o.custom;
 }
 
 // ---------- move_core transfer linking ----------
@@ -395,17 +503,27 @@ function renderMove() {
     document.querySelector("#edges-table tbody").innerHTML = "";
     return;
   }
-  const colorsFor = (well, key) => editStep.edges.map((e, i) => e[key] === well ? edgeColor(i) : null).filter(Boolean);
+  const ch = stepChannels();
+  if (ch > 1) sanitizeEdgesForChannels();
+  const sameCol = (a, b) => { const pa = parseWell(a), pb = parseWell(b); return !!(pa && pb && pa.col === pb.col); };
+  const match = (edgeWell, w) => ch > 1 ? sameCol(edgeWell, w) : edgeWell === w;
+  const colorsFor = (well, key) => editStep.edges.map((e, i) => match(e[key], well) ? edgeColor(i) : null).filter(Boolean);
+  const armedHere = w => armedSrc && (ch > 1 ? sameCol(armedSrc, w) : armedSrc === w);
+  const dim = (g, w, colors) => (ch > 1 && !colors.length && !isHead(g, w)) ? "color:#bbb;background:#fafafa" : "";
   document.getElementById("src-grid").innerHTML = gridHTML(srcGrid, w => {
-    const style = w === armedSrc ? "background:#e0a030;color:#fff" : cellStyle(colorsFor(w, "src"));
+    const colors = colorsFor(w, "src");
+    const style = armedHere(w) ? "background:#e0a030;color:#fff" : (colors.length ? cellStyle(colors) : dim(srcGrid, w, colors));
     return `<button class="well" data-src="${w}" style="${style}">${w}</button>`;
   });
-  document.getElementById("dst-grid").innerHTML = gridHTML(dstGrid, w =>
-    `<button class="well" data-dst="${w}" style="${cellStyle(colorsFor(w, "dst"))}">${w}</button>`);
+  document.getElementById("dst-grid").innerHTML = gridHTML(dstGrid, w => {
+    const colors = colorsFor(w, "dst");
+    const style = colors.length ? cellStyle(colors) : dim(dstGrid, w, colors);
+    return `<button class="well" data-dst="${w}" style="${style}">${w}</button>`;
+  });
   document.querySelector("#edges-table tbody").innerHTML = editStep.edges.map((e, i) =>
     `<tr>
        <td><span class="dot" style="background:${edgeColor(i)}"></span></td>
-       <td>${e.src} &rarr; ${e.dst}</td>
+       <td>${e.src} &rarr; ${e.dst}${ch > 1 ? " (col)" : ""}</td>
        <td><input type="number" class="mc-vol" data-ei="${i}" value="${e.volume ?? ""}" placeholder="µL" style="width:64px"></td>
        <td><button class="small danger" data-edge="${i}">remove</button></td>
      </tr>`
@@ -463,6 +581,65 @@ function applyAssignPaste(text) {
 }
 
 
+// paste a whole plate's contents as a dict of well -> {substance, volume}.
+// Tolerates the shape people copy out of python files: no outer braces, single
+// quotes, and trailing commas. Volume is required and named "volume" (no
+// amount->volume conversion); substance is required. Sets wells and assignments
+// in one go, replacing the current selection.
+function parseContentDict(text) {
+  let t = text.trim();
+  if (!t) throw new Error("nothing to paste");
+  if (!t.startsWith("{")) t = "{" + t + "}";
+  t = t.replace(/'/g, '"');            // python single quotes -> json (names carry no apostrophes)
+  t = t.replace(/,(\s*[}\]])/g, "$1"); // tolerate trailing commas
+  let obj;
+  try { obj = JSON.parse(t); }
+  catch (e) { throw new Error("not valid JSON: " + e.message); }
+  if (typeof obj !== "object" || Array.isArray(obj) || obj === null)
+    throw new Error("expected a dict of well -> {substance, volume}");
+  return obj;
+}
+
+function applyContentJSON() {
+  const note = document.getElementById("as-json-note");
+  const setNote = (t, bad) => { note.textContent = t; note.style.color = bad ? "#a32d2d" : "#0f6e56"; };
+  if (!editStep || !editGrid) { setNote("Pick a destination plate first.", true); return; }
+  let obj;
+  try { obj = parseContentDict(document.getElementById("as-json").value); }
+  catch (e) { setNote(e.message, true); return; }
+
+  const valid = new Set(Object.values(editGrid.byRC));
+  const ch = stepChannels();
+  const wells = [];
+  const assignments = {};
+  let unknownSub = 0;
+  for (const [rawWell, v] of Object.entries(obj)) {
+    const w = String(rawWell).trim();
+    if (!valid.has(w)) { setNote(`well "${w}" is not in this plate`, true); return; }
+    if (typeof v !== "object" || v === null || Array.isArray(v)) { setNote(`"${w}" must map to {substance, volume}`, true); return; }
+    if (!("volume" in v)) { setNote(`"${w}" has no "volume" (use "volume", not "amount")`, true); return; }
+    const vol = Number(v.volume);
+    if (!isFinite(vol) || vol <= 0) { setNote(`"${w}" volume must be a positive number`, true); return; }
+    const sub = (v.substance == null ? "" : String(v.substance)).trim();
+    if (!sub) { setNote(`"${w}" has no substance`, true); return; }
+    if (ch > 1) {
+      if (headOf(editGrid, w) !== w) { setNote(`with a ${ch}-channel pipette, paste column heads (row A) only; "${w}" is not one`, true); return; }
+      if (colMembers(editGrid, parseWell(w).col).length !== ch) { setNote(`column at "${w}" is not ${ch} wells`, true); return; }
+    }
+    wells.push(w);
+    assignments[w] = { substance: sub, volume: { value: vol } };
+    if (!substances.includes(sub)) unknownSub++;
+  }
+  if (!wells.length) { setNote("no entries found", true); return; }
+  editSel = new Set(wells);
+  editStep.wells = wells;
+  editStep.assignments = assignments;
+  editStep.order = editStep.order || { axis: "row", reverse: false, custom: false };
+  editStep.order.custom = true;
+  setNote(`set ${wells.length} well(s)` + (unknownSub ? `, ${unknownSub} unknown substance name(s)` : ""), unknownSub > 0);
+  renderWellGrid();
+}
+
 // ---------- editor open ----------
 async function openEditor(step) {
   editStep = step; editMode = "select";
@@ -473,6 +650,7 @@ async function openEditor(step) {
     document.getElementById("edit-plate").innerHTML =
       `<option value="">— pick —</option>` + corePlates.map(p => `<option value="${p.name}" ${p.name === step.dest_plate ? "selected" : ""}>${p.name}</option>`).join("");
     editSel = new Set(step.wells);
+    if (!step.order) step.order = { axis: "row", reverse: false, custom: false };
     if (step.dest_plate) { const p = corePlates.find(p => p.name === step.dest_plate); if (p) editGrid = await gridFor(p.type); }
   } else {
     const opts = sel => `<option value="">— pick —</option>` + corePlates.map(p => `<option value="${p.name}" ${p.name === sel ? "selected" : ""}>${p.name}</option>`).join("");
@@ -514,25 +692,65 @@ document.getElementById("modes").addEventListener("click", e => { if (e.target.d
 
 // add_stock well selection
 document.getElementById("well-grid").addEventListener("click", e => {
-  const w = e.target.dataset.well; if (!w || !editStep) return;
-  if (e.shiftKey && editAnchor) editSel = new Set(rectWells(editGrid, editAnchor, w));
+  let w = e.target.dataset.well; if (!w || !editStep) return;
+  const ch = stepChannels();
+  if (ch > 1) {
+    // snap any click to the column head; reject a plate whose column is not
+    // exactly `channels` wells (an N-channel pipette cannot address it)
+    const head = headOf(editGrid, w);
+    if (!head || colMembers(editGrid, parseWell(head).col).length !== ch) {
+      msg(`this plate's columns are not ${ch} wells, so a ${ch}-channel pipette cannot address them`, false);
+      return;
+    }
+    w = head;
+  }
+  if (e.shiftKey && editAnchor) {
+    let wells = rectWells(editGrid, editAnchor, w);
+    if (ch > 1) wells = [...new Set(wells.map(x => headOf(editGrid, x)).filter(Boolean))];
+    editSel = new Set(wells);
+  }
   else if (e.ctrlKey || e.metaKey) { editSel.has(w) ? editSel.delete(w) : editSel.add(w); editAnchor = w; }
   else { editSel = new Set([w]); editAnchor = w; }
+  editStep.order = editStep.order || { axis: "row", reverse: false, custom: false };
+  editStep.order.custom = (e.ctrlKey || e.metaKey) ? true : false;
   editStep.wells = [...editSel];
   for (const k of Object.keys(editStep.assignments)) if (!editSel.has(k)) delete editStep.assignments[k];
   renderWellGrid();
 });
 
+document.getElementById("ord-row").onchange = () => { if (editStep) { editStep.order.axis = "row"; renderWellGrid(); } };
+document.getElementById("ord-col").onchange = () => { if (editStep) { editStep.order.axis = "col"; renderWellGrid(); } };
+document.getElementById("ord-reverse").onchange = e => { if (editStep) { editStep.order.reverse = e.target.checked; renderWellGrid(); } };
+document.getElementById("ord-custom").onchange = e => { if (editStep) { editStep.order.custom = e.target.checked; renderWellGrid(); } };
+
 // move_core edge drawing
 document.getElementById("src-grid").addEventListener("click", e => {
-  const w = e.target.dataset.src; if (!w || !editStep) return;
+  let w = e.target.dataset.src; if (!w || !editStep) return;
+  const ch = stepChannels();
+  if (ch > 1) {
+    const head = headOf(srcGrid, w);
+    if (!head || colMembers(srcGrid, parseWell(head).col).length !== ch) {
+      msg(`source plate's columns are not ${ch} wells, so a ${ch}-channel pipette cannot address them`, false);
+      return;
+    }
+    w = head;
+  }
   armedSrc = (armedSrc === w) ? null : w;
   document.getElementById("armed").textContent = armedSrc ? `Source ${armedSrc} armed — now click a receiver well.` : "Click a source well, then a receiver well, to link one transfer.";
   renderMove();
 });
 document.getElementById("dst-grid").addEventListener("click", e => {
-  const w = e.target.dataset.dst; if (!w || !editStep) return;
+  let w = e.target.dataset.dst; if (!w || !editStep) return;
   if (!armedSrc) { msg("Click a source well first.", false); return; }
+  const ch = stepChannels();
+  if (ch > 1) {
+    const head = headOf(dstGrid, w);
+    if (!head || colMembers(dstGrid, parseWell(head).col).length !== ch) {
+      msg(`receiver plate's columns are not ${ch} wells, so a ${ch}-channel pipette cannot address them`, false);
+      return;
+    }
+    w = head;
+  }
   editStep.edges.push({ src: armedSrc, dst: w, volume: null });
   armedSrc = null;
   document.getElementById("armed").textContent = "Click a source well, then a receiver well, to link one transfer.";
@@ -556,12 +774,26 @@ document.getElementById("mc-const-btn").onclick = () => {
 };
 document.getElementById("btn-map-matching").onclick = () => {
   if (!editStep || !srcGrid || !dstGrid) { msg("Pick both plates first.", false); return; }
-  const dstWells = new Set(Object.values(dstGrid.byRC));
+  const ch = stepChannels();
   const existing = new Set(editStep.edges.map(e => e.src + ">" + e.dst));
   let added = 0;
-  Object.values(srcGrid.byRC).forEach(w => {
-    if (dstWells.has(w) && !existing.has(w + ">" + w)) { editStep.edges.push({ src: w, dst: w, volume: null }); added++; }
-  });
+  if (ch > 1) {
+    const dstHeads = new Set(dstGrid.cols
+      .filter(c => colMembers(dstGrid, c).length === ch)
+      .map(c => dstGrid.byRC[dstGrid.rows[0] + "-" + c]).filter(Boolean));
+    srcGrid.cols.forEach(c => {
+      if (colMembers(srcGrid, c).length !== ch) return;
+      const head = srcGrid.byRC[srcGrid.rows[0] + "-" + c];
+      if (head && dstHeads.has(head) && !existing.has(head + ">" + head)) {
+        editStep.edges.push({ src: head, dst: head, volume: null }); added++;
+      }
+    });
+  } else {
+    const dstWells = new Set(Object.values(dstGrid.byRC));
+    Object.values(srcGrid.byRC).forEach(w => {
+      if (dstWells.has(w) && !existing.has(w + ">" + w)) { editStep.edges.push({ src: w, dst: w, volume: null }); added++; }
+    });
+  }
   if (!added) msg("No new matching wells to map.", false);
   renderMove();
 };
@@ -608,6 +840,10 @@ document.getElementById("as-apply-vol").onclick = () => {
   const mode = document.getElementById("as-volmode").value;
   const val = document.getElementById("as-volval").value;
   if (val === "") { msg("Enter a value.", false); return; }
+  if (mode === "fillto" && stepChannels() > 1) {
+    msg("fill_to can't be used with a multichannel pipette: a column takes one uniform amount", false);
+    return;
+  }
   editStep.wells.forEach(w => {
     editStep.assignments[w] = editStep.assignments[w] || {};
     editStep.assignments[w].volume = mode === "fillto" ? { mode: "fill_to", target: Number(val) } : { value: Number(val) };
@@ -619,6 +855,7 @@ document.getElementById("as-clear").onclick = () => {
   renderAssign();
 };
 document.getElementById("as-paste-btn").onclick = () => applyAssignPaste(document.getElementById("as-paste").value);
+document.getElementById("as-json-btn").onclick = applyContentJSON;
 
 document.getElementById("edit-done").onclick = () => {
   document.getElementById("editor").style.display = "none"; editStep = null; renderSteps();

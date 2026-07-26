@@ -1,27 +1,37 @@
 """Expand a plan's steps into the atomic transfer_execution stream.
 
 The plan stores intent (add_stock and move_core with wells, edges, and volume
-cells). The simulator and the agent consume atomic transfer_execution steps
-(one source, one receiver, one amount). This generator is the bridge: it walks
-the ordered steps, resolves fill_to against a running per-well volume seeded
-from the config, and emits one transfer per receiver well. Wells or edges with
-no volume yet are reported as incomplete rather than emitted, so the checker
-can tell unfinished from wrong.
+cells). The simulator and the agent consume atomic transfer_execution steps.
+This generator is the bridge: it walks the ordered steps, resolves fill_to
+against a running per-well volume seeded from the config, and emits one transfer
+per receiver well. Wells or edges with no volume yet are reported as incomplete
+rather than emitted, so the checker can tell unfinished from wrong.
 
 fill_to resolves to target minus the running volume in that well at the point
 the step runs, so ordering is load bearing. A negative result (the well is
 already at or above the target) is emitted as is and caught downstream by the
 simulator's amount > 0 rule, keeping one source of truth for validity.
+
+Multichannel: the channel count comes from the pinned config
+(``config.pipettes[mount].channels``, baked at save), and the column membership
+from the receiving/aspirating plate's labware definition (``labware_defs``). A
+step whose pipette has channels > 1 emits, per selected column head, one transfer
+carrying the resolved ``wells`` (and ``source_wells`` for a core move) so the
+checker sees the exact column the agent will drive. The running ledger fans out
+over the whole column so fill_to ordering stays correct. fill_to is refused with
+a multichannel, since a column takes one uniform amount, not a per-well top-up.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from opentrons_control.backend.app.protocol_model import (
     BaseConfig,
     ManualProtocol,
     Step,
+    resolve_column,
 )
 
 
@@ -48,20 +58,85 @@ def _seed_core(config: BaseConfig) -> dict[str, dict[str, float]]:
     return core
 
 
+def _ordered_wells(wells: list[str], order: dict[str, Any] | None) -> list[str]:
+    """Return an add_stock step's wells in execution order.
+
+    ``order`` is the ordering descriptor ``{axis, reverse, custom}``. When custom,
+    the stored well list *is* the order (an arbitrary hand-picked sequence, e.g.
+    from ctrl-click selection or a JSON paste), so it is walked untouched.
+    Otherwise the wells are sorted lexicographically by the chosen axis
+    (``"row"`` = row-major, ``"col"`` = column-major) and direction. Ordering is
+    load bearing: fill_to resolves against the running ledger at the point a well
+    is filled, so traversal is a semantic input, not presentation. An absent
+    descriptor is row-major forward, so plans authored before ordering existed
+    expand identically.
+
+    :param wells: The step's selected wells, in selection order.
+    :param order: The ordering descriptor, or None for the default.
+    :returns: The wells in the order transfers should be emitted.
+    """
+    order = order or {}
+    if order.get("custom"):
+        return list(wells)
+    axis = order.get("axis", "row")
+    reverse = bool(order.get("reverse", False))
+
+    def key(w: str) -> tuple[Any, Any]:
+        m = re.fullmatch(r"([A-Za-z]+)(\d+)", w)
+        if m is None:
+            return (w, 0)
+        row, col = m.group(1), int(m.group(2))
+        return (row, col) if axis == "row" else (col, row)
+
+    return sorted(wells, key=key, reverse=reverse)
+
+
+def _column_for(
+    plate: str,
+    anchor: str,
+    channels: int,
+    labware_defs: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Resolve the wells one motion touches on ``plate`` when targeting ``anchor``.
+
+    Single-channel is just the anchor and needs no geometry. A multichannel needs
+    the plate's labware definition to read its column membership; a plate without
+    one (e.g. a built-in load name with no stored definition) cannot be resolved.
+
+    :raises ValueError: if geometry is needed but unavailable, or the anchor is not
+        a valid column head for the channel count.
+    """
+    if channels == 1:
+        return [anchor]
+    definition = labware_defs.get(plate)
+    if definition is None:
+        raise ValueError(
+            f"no labware geometry for plate '{plate}', needed to resolve a "
+            f"{channels}-channel column"
+        )
+    return resolve_column(anchor, channels, definition)
+
+
 def plan_to_protocol(
     config: BaseConfig,
     steps: list[dict[str, Any]],
     name: str = "check",
     drivers_version: str = "check",
+    labware_defs: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[ManualProtocol, list[str], list[str]]:
     """Expand plan steps into a transfer_execution protocol plus incomplete notes.
 
-    :param config: The pinned deck config (plates, stock content, capacities).
+    :param config: The pinned deck config (plates, stock content, capacities,
+        pipette channel counts).
     :param steps: The plan's ordered step envelopes (add_stock or move_core).
+    :param labware_defs: plate name -> labware definition, needed only to resolve
+        multichannel columns; single-channel plans work without it.
     :returns: A ManualProtocol of atomic transfers, a list of incomplete notes
         (wells or transfers with no substance or volume yet), and a list of hard
-        generation errors (a fill_to below the well's current volume).
+        generation errors (a fill_to below the well's current volume, an
+        unresolvable column, or fill_to under a multichannel pipette).
     """
+    labware_defs = labware_defs or {}
     core = _seed_core(config)
     out: list[Step] = []
     incomplete: list[str] = []
@@ -80,15 +155,20 @@ def plan_to_protocol(
         pipette = how.get("pipette") or "auto"
         tip_policy = how.get("tip") or "fresh"
 
-        # collect this step's transfers as (source, receiver, amount), updating
-        # the running ledger as we go so fill_to resolves against live volumes
-        transfers: list[tuple[list[Any], list[Any], float]] = []
+        # resolve the pipette and its channel count up front: the channel count
+        # drives both the column fan-out and the fill_to guard below.
+        mount = default_mount if pipette == "auto" else pipette
+        pip_info = config.pipettes.get(mount)
+        channels = pip_info.channels if pip_info is not None else 1
+
+        # each transfer: (source, receiver, amount, recv_wells, src_wells|None)
+        transfers: list[tuple[list[Any], list[Any], float, list[str], list[str] | None]] = []
 
         if kind == "add_stock":
             plate = step.get("dest_plate")
             assignments = step.get("assignments") or {}
             running = core.setdefault(plate, {})
-            for well in step.get("wells") or []:
+            for well in _ordered_wells(step.get("wells") or [], step.get("order")):
                 a = assignments.get(well) or {}
                 substance = a.get("substance")
                 cell = a.get("volume")
@@ -98,7 +178,16 @@ def plan_to_protocol(
                 if cell is None:
                     incomplete.append(f"step {i + 1}: {plate}/{well} has no volume")
                     continue
-                if isinstance(cell, dict) and cell.get("mode") == "fill_to":
+
+                is_fill_to = isinstance(cell, dict) and cell.get("mode") == "fill_to"
+                if is_fill_to and channels > 1:
+                    errors.append(
+                        f"step {i + 1}: {plate}/{well} uses fill_to with a {channels}-channel "
+                        f"pipette, but a column takes one uniform amount, not a per-well top-up"
+                    )
+                    continue
+
+                if is_fill_to:
                     target = cell.get("target")
                     if target is None:
                         incomplete.append(f"step {i + 1}: {plate}/{well} fill_to has no target")
@@ -113,8 +202,16 @@ def plan_to_protocol(
                         continue
                 else:
                     amount = float(cell.get("value") if isinstance(cell, dict) else cell)
-                transfers.append(([substance], [plate, well], amount))
-                running[well] = running.get(well, 0.0) + amount
+
+                try:
+                    recv_wells = _column_for(plate, well, channels, labware_defs)
+                except ValueError as exc:
+                    errors.append(f"step {i + 1}: {exc}")
+                    continue
+
+                transfers.append(([substance], [plate, well], amount, recv_wells, None))
+                for w in recv_wells:
+                    running[w] = running.get(w, 0.0) + amount
 
         elif kind == "move_core":
             s_plate = step.get("source_plate")
@@ -128,29 +225,49 @@ def plan_to_protocol(
                     incomplete.append(f"step {i + 1}: transfer {src} to {dst} has no volume")
                     continue
                 amount = float(vol)
-                transfers.append(([s_plate, src], [r_plate, dst], amount))
-                r_running[dst] = r_running.get(dst, 0.0) + amount
-                s_running[src] = s_running.get(src, 0.0) - amount
+
+                try:
+                    recv_wells = _column_for(r_plate, dst, channels, labware_defs)
+                    src_wells = _column_for(s_plate, src, channels, labware_defs)
+                except ValueError as exc:
+                    errors.append(f"step {i + 1}: {exc}")
+                    continue
+                if len(recv_wells) != len(src_wells):
+                    errors.append(
+                        f"step {i + 1}: source column ({len(src_wells)}) and receiver column "
+                        f"({len(recv_wells)}) differ in length"
+                    )
+                    continue
+
+                transfers.append(([s_plate, src], [r_plate, dst], amount, recv_wells, src_wells))
+                for w in recv_wells:
+                    r_running[w] = r_running.get(w, 0.0) + amount
+                for w in src_wells:
+                    s_running[w] = s_running.get(w, 0.0) - amount
 
         # tag the step's transfers to the agent's transfer_execution contract:
         # method by name, tip_cycle as [pickup, drop], a resolved pipette_mount,
         # and the method hyperparameters spread as top-level extras (the agent
         # collects non-reserved top-level keys and passes them to the method).
         # Reserved keys are written last so a stray param cannot shadow them.
+        # For a multichannel op, the resolved column travels as `wells` (and
+        # `source_wells` for a core move) so the checker sees the exact column;
+        # single-channel emits neither, keeping those payloads byte-identical.
         flags = _tip_flags(len(transfers), tip_policy)
-        mount = default_mount if pipette == "auto" else pipette
-        for (source, receiver, amount), flag in zip(transfers, flags):
-            out.append(Step(
-                action="transfer_execution",
-                payload={
-                    **params,
-                    "source": source,
-                    "receiver": receiver,
-                    "amount": amount,
-                    "method": method,
-                    "pipette_mount": mount,
-                    "tip_cycle": [flag["pickup"], flag["drop"]],
-                },
-            ))
+        for (source, receiver, amount, recv_wells, src_wells), flag in zip(transfers, flags):
+            payload: dict[str, Any] = {
+                **params,
+                "source": source,
+                "receiver": receiver,
+                "amount": amount,
+                "method": method,
+                "pipette_mount": mount,
+                "tip_cycle": [flag["pickup"], flag["drop"]],
+            }
+            if channels > 1:
+                payload["wells"] = recv_wells
+                if src_wells is not None:
+                    payload["source_wells"] = src_wells
+            out.append(Step(action="transfer_execution", payload=payload))
 
     return ManualProtocol(name=name, drivers_version=drivers_version, config=config, steps=out), incomplete, errors

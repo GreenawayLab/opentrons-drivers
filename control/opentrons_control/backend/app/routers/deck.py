@@ -53,7 +53,9 @@ from opentrons_control.backend.app.db.runner import (
 from opentrons_control.backend.app.protocol_model import (
     BaseConfig,
     custom_labware_refs,
+    labware_columns,
     labware_wells,
+    pipette_channels,
 )
 from opentrons_control.backend.app.versioning import bump, classify_config_change
 
@@ -265,15 +267,40 @@ def add_standard_unit(
     user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Add a standard module or pipette string. Requires add_labware (admins bypass)."""
+    """Add a standard module or pipette string. Requires add_labware (admins bypass).
+
+    For a pipette, the channel count is derived from the load name here — the one
+    supervised moment to run that fragile two-convention parse — and written to
+    pipette_specs in the same transaction, so a config saved later reads channels
+    off-robot. A name whose channel count cannot be determined is a 400, refused at
+    add-time rather than surfacing deep inside the generator.
+    """
     _gate(user, db, "add_labware")
     if fetch_one(db, "standard_units/get.sql", {"name": req.name}) is not None:
         raise HTTPException(status_code=409, detail=f"'{req.name}' already exists")
+
+    channels: int | None = None
+    if req.category == "pipette":
+        try:
+            channels = pipette_channels(req.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    # both rows in one transaction so the 1:1 (pipette row <-> spec row) holds
     execute(
         db,
         "standard_units/insert.sql",
         {"name": req.name, "category": req.category, "created_by": user.id},
+        commit=False,
     )
+    if channels is not None:
+        execute(
+            db,
+            "pipette_specs/insert.sql",
+            {"name": req.name, "channels": channels},
+            commit=False,
+        )
+    db.commit()
     return {"status": "added", "name": req.name}
 
 
@@ -419,6 +446,54 @@ def save_config(
                     detail=f"plate '{pname}' uses wells not in {plate.type}: {', '.join(bad)}",
                 )
 
+    # bake each pipette's channel count into the config so the stored JSONB is
+    # self-sufficient: the generator and checker read config.pipettes[m].channels
+    # off-robot, with no DB round-trip and no live pipette. Prefer the registered
+    # spec (ground truth); fall back to deriving from the model name so a config
+    # naming a pipette not yet in the catalogue still saves.
+    for _mount, pip in req.config.pipettes.items():
+        spec = fetch_one(db, "pipette_specs/get.sql", {"name": pip.model})
+        if spec is not None:
+            pip.channels = int(spec["channels"])
+        else:
+            try:
+                pip.channels = pipette_channels(pip.model)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"pipette '{pip.model}': {exc}")
+
+    # multichannel compatibility (advisory, not blocking): an N-channel pipette
+    # can only address a column that is exactly N wells. Which pipette drives
+    # which plate is decided per step in the plan, not here, so a hard config
+    # block would reject valid mixed-pipette configs (an 8-channel and a
+    # single-channel sharing a deck, each with its own plates). The authoritative
+    # prohibition is per step in the generator (resolve_column raises); this pass
+    # only warns, so the author sees an unusable pairing before writing a plan
+    # that would fail the check. Stock plates are excluded: a multichannel
+    # aspirates a reservoir with all tips in one well, so column length is moot.
+    compat_warnings: list[str] = []
+    multi = {m: pip.channels for m, pip in req.config.pipettes.items() if pip.channels > 1}
+    if multi:
+        col_lengths: dict[str, list[int]] = {}
+        for pname, plate in req.config.core_plates.items():
+            if pname.startswith("tiprack_") or not plate.type.endswith(".json"):
+                continue
+            lw = fetch_one(db, "labware/get.sql", {"name": plate.type})
+            if lw is None:
+                continue
+            try:
+                col_lengths[pname] = [len(c) for c in labware_columns(lw["definition"])]
+            except ValueError:
+                continue
+        for mount, ch in multi.items():
+            model = req.config.pipettes[mount].model
+            for pname, lengths in col_lengths.items():
+                if any(length != ch for length in lengths):
+                    shape = f"{lengths[0]} wells" if len(set(lengths)) == 1 else "columns of varying length"
+                    compat_warnings.append(
+                        f"pipette '{mount}' ({model}, {ch}-channel) cannot address core plate "
+                        f"'{pname}' ({shape}); a plan step pairing them will fail the check"
+                    )
+
     head = fetch_one(db, "deck_configs/latest_for_family.sql", {"owner": user.id, "name": req.name})
 
     if req.base_id is None:
@@ -474,7 +549,8 @@ def save_config(
         },
     )
     return {"status": "saved", "id": row["id"] if row else None, "name": req.name,
-            "version": f"{version[0]}.{version[1]}.{version[2]}"}
+            "version": f"{version[0]}.{version[1]}.{version[2]}",
+            "warnings": compat_warnings}
 
 
 def _owned_or_admin(db: Session, config_id: int, user: CurrentUser) -> dict[str, Any]:

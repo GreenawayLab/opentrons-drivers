@@ -147,6 +147,13 @@ CREATE TABLE standard_units (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE pipette_specs (
+    name      TEXT    PRIMARY KEY
+              CONSTRAINT pipette_specs_name_fkey REFERENCES standard_units (name) ON DELETE CASCADE,
+    channels  INTEGER NOT NULL
+              CONSTRAINT pipette_specs_channels_check CHECK (channels IN (1, 8, 96))
+);
+
 -- ============================== permissions ==============================
 
 -- Per-user capability flags. Capabilities are data (strings), not columns, so a

@@ -376,8 +376,12 @@ async function saveConfig() {
   // base_id is the version this edit derives from. The backend bumps if it is the
   // family head, otherwise forks a new family. A blank new config sends null.
   try {
-    await api("POST", "/configs", { name, config: cfg, base_id: baseId, description: document.getElementById("config-desc").value || null });
+    const res = await api("POST", "/configs", { name, config: cfg, base_id: baseId, description: document.getElementById("config-desc").value || null });
     try { await draftReq("DELETE"); } catch (_) {}
+    if (res && res.warnings && res.warnings.length) {
+      // saved fine, but advisory multichannel compatibility notes: show before leaving
+      alert("Config saved (" + res.version + "), but note:\n\n" + res.warnings.join("\n"));
+    }
     window.location.href = "/user/configs";
   } catch (e) {
     document.getElementById("save-err").textContent = e.message;
