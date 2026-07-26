@@ -6,13 +6,14 @@ from opentrons.protocol_api.labware import Labware
 from typing import Any, Dict, List, cast
 from opentrons_drivers.common.custom_types import StaticCtx, JSONType
 from opentrons_drivers.common.actions import ACTION_REGISTRY
-from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo
+from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo, ModuleInfo
 from pathlib import Path
 
 class Opentrons:
     """
     Unified Opentrons driver responsible for:
     - Loading labware (core plates, stock plates, tipracks)
+    - Loading hardware modules and their adapters
     - Applying deck offsets
     - Building volume/substance bookkeeping tables
     - Loading pipettes and attaching tipracks
@@ -21,15 +22,15 @@ class Opentrons:
     def __init__(self, protocol: protocol_api.ProtocolContext,
                  base_config: BaseConfig) -> None:
         """
-        Create all labware, offsets, pipettes, and internal volume dictionaries
-        as described in the supplied BaseConfig.
+        Create all labware, modules, offsets, pipettes, and internal volume
+        dictionaries as described in the supplied BaseConfig.
 
         Parameters
         ----------
         protocol : ProtocolContext
             Active Opentrons protocol context.
         base_config : BaseConfig
-            Declarative configuration describing all labware, pipettes,
+            Declarative configuration describing all labware, modules, pipettes,
             offsets and initial well contents.
         """
         self.protocol = protocol
@@ -40,12 +41,21 @@ class Opentrons:
         self.stock_plates: Dict[str, Labware] = {}
         self.support_plates: List[Labware] = []  # tipracks and any support labware
 
+        # Module containers: loaded module contexts and their adapters, by name.
+        # Typed Any because the module-context union is opentrons-version-specific.
+        self.modules: Dict[str, Any] = {}
+        self.module_adapters: Dict[str, Any] = {}
+
         # Internal bookkeeping
         self.core_amounts: Dict[str, Dict[str, CoreWell]] = defaultdict(dict)
         self.stock_amounts: Dict[str, List[StockWell]] = defaultdict(list)
 
         # Pipette references
         self.pipettes: Dict[str, InstrumentContext] = {}
+
+        # Load modules first: a plate placed on a module loads onto that module's
+        # adapter, so the module and adapter must exist before the plate does.
+        self._init_modules()
 
         # Load all labware from BaseConfig
         self._init_assigned_plates("core_plates", is_stock=False)
@@ -122,6 +132,7 @@ class Opentrons:
     # Internal: Labware creation
     # ----------------------------------------------------------------------
 
+    @staticmethod
     def _load_plate_def(filename: str) -> Dict[str, Any]:
         """Read a labware/plate definition JSON from the ``plates`` directory.
 
@@ -134,12 +145,29 @@ class Opentrons:
         """
         return json.loads(Path("plates", filename).read_text(encoding="utf-8"))
 
+    def _init_modules(self) -> None:
+        """
+        Load hardware modules and their adapters from BaseConfig.
+
+        Each module is loaded onto its deck slot and stored by name so module
+        actions can reach it. A declared adapter is loaded onto the module and
+        kept as the load target for any plate placed on that module (a
+        heater-shaker requires a thermal adapter before labware can sit on it).
+        """
+        modules = cast(Dict[str, ModuleInfo], self.base_config.get("modules", {}))
+        for module_name, info in modules.items():
+            module = self.protocol.load_module(info["type"], info["place"])
+            self.modules[module_name] = module
+            adapter_name = info.get("adapter")
+            if adapter_name:
+                self.module_adapters[module_name] = module.load_adapter(adapter_name)
+
     def _init_assigned_plates(self, name: str, is_stock: bool) -> None:
         """
         Load all labware defined under `base_config[name]` and apply offsets.
 
         This includes:
-        - Custom core plates (from custom JSON)
+        - Custom core plates (from custom JSON), on a deck slot or on a module
         - Custom stock plates (from custom JSON)
         - Tipracks (either built-in or custom JSON)
         """
@@ -173,9 +201,17 @@ class Opentrons:
             # Core / stock plates always use custom JSON
             lw_def = self._load_plate_def(labware_type)
 
-            plate = self.protocol.load_labware_from_definition(
-                lw_def, deck_slot
-            )
+            # A plate placed on a module loads onto that module's adapter (or the
+            # module itself if it has none), not a deck slot: the module's slot
+            # fixes the position and the API stacks the heights.
+            on_module = plate_info.get("on_module")
+            if on_module:
+                target = self.module_adapters.get(on_module) or self.modules[on_module]
+                plate = target.load_labware_from_definition(lw_def)
+            else:
+                plate = self.protocol.load_labware_from_definition(
+                    lw_def, deck_slot
+                )
 
             plate.set_offset(
                 x=offset.get("x", 0.0),
@@ -220,6 +256,11 @@ class Opentrons:
 
         Core plates create one CoreWell per well.
         Stock plates group wells by initial substance name.
+
+        Plates on modules are already loaded into self.core_plates /
+        self.stock_plates by name, so this is unchanged for them: the wells come
+        from the labware definition and the live plate object regardless of
+        whether it sits on a deck slot or a module.
         """
         assigned = cast(Dict[str, PlateInfo], self.base_config.get(name, {}))
 

@@ -33,6 +33,11 @@
   </section>
 
   <section>
+    <h2>Modules <button id="btn-add-module" class="small">+ module</button></h2>
+    <div id="modules"></div>
+  </section>
+
+  <section>
     <h2>Core plates <button id="btn-add-core" class="small">+ plate</button></h2>
     <div id="core-plates"></div>
   </section>
@@ -43,7 +48,9 @@
   </section>
 
 <datalist id="pipette-models"></datalist>
-<datalist id="labware-options"></datalist>
+<datalist id="labware-core"></datalist>
+<datalist id="labware-stock"></datalist>
+<datalist id="module-options"></datalist>
 
 <style>
   section { margin: 1.5rem 0; }
@@ -71,6 +78,7 @@ const state = {
   units: [],   // standard_units: {name, category}
   core: [],   // {name, type, place, max_volume, offset:{x,y,z}, content:[{well,substance,volume}]}
   stock: [],  // {name, type, place, content:[...]}
+  modules: [], // {name, type, place, adapter}
 };
 
 function fillDatalist(id, values) {
@@ -82,9 +90,19 @@ function unitsOf(cat) { return state.units.filter(u => u.category === cat).map(u
 // tipracks, plates, and reservoirs.
 function deckUnits() { return state.units.filter(u => u.category !== "pipette").map(u => u.name); }
 // Slot labware = uploaded files + standard modules. Pipettes get their own list.
+function plateUnits(kind) {
+  // core plates never suggest tipracks or modules; stock plates may suggest
+  // tipracks (support labware is often parked there) but never modules.
+  const customs = (state.labware || []).filter(l => kind === "stock" || (l.kind || "plate") !== "tiprack").map(l => l.name);
+  const cats = kind === "stock" ? ["plate", "reservoir", "tiprack"] : ["plate", "reservoir"];
+  const std = (state.units || []).filter(u => cats.includes(u.category)).map(u => u.name);
+  return [...customs, ...std];
+}
 function refreshDatalists() {
-  fillDatalist("labware-options", [...state.labware.map(l => l.name), ...deckUnits()]);
+  fillDatalist("labware-core", plateUnits("core"));
+  fillDatalist("labware-stock", plateUnits("stock"));
   fillDatalist("pipette-models", unitsOf("pipette"));
+  fillDatalist("module-options", unitsOf("module"));
 }
 
 function msg(text, ok) {
@@ -110,6 +128,7 @@ async function loadUnits() {
     api("GET", "/labware"), api("GET", "/standard-units"),
   ]);
   refreshDatalists();
+  renderModules();
   renderPlates();
 }
 
@@ -190,9 +209,10 @@ function plateCard(p, kind, idx) {
     : "";
   return `<div class="plate">
     <div class="row">
-      <label>labware<input value="${p.type}" list="labware-options" data-f="${kind}:${idx}:type" placeholder="pick a labware first"></label>
+      <label>labware<input value="${p.type}" list="labware-${kind}" data-f="${kind}:${idx}:type" placeholder="pick a labware first"></label>
       <label>name<input value="${p.name}" data-f="${kind}:${idx}:name" ${isTiprack ? "readonly title='tipracks are named automatically so the robot attaches them'" : ""} placeholder="${isCore ? "core1" : "stocks"}"></label>
       <label>slot<input value="${p.place}" data-f="${kind}:${idx}:place" placeholder="5"></label>
+      ${isCore ? onModuleField(p, kind, idx) : ""}
       ${maxField}
       <button class="small danger" data-delp="${kind}:${idx}">remove plate</button>
     </div>
@@ -217,8 +237,9 @@ function plateCard(p, kind, idx) {
 function renderDeck() {
   const esc = s => String(s).replace(/[<>&]/g, ch => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[ch]));
   const bySlot = {};
-  (state.core || []).forEach(p => { if (String(p.place).trim()) bySlot[String(p.place).trim()] = { ...p, role: "core" }; });
+  (state.core || []).forEach(p => { if (!p.on_module && String(p.place).trim()) bySlot[String(p.place).trim()] = { ...p, role: "core" }; });
   (state.stock || []).forEach(p => { if (String(p.place).trim()) bySlot[String(p.place).trim()] = { ...p, role: "stock" }; });
+  (state.modules || []).forEach(m => { if (String(m.place).trim()) bySlot[String(m.place).trim()] = { name: m.name, type: m.type, role: "module" }; });
   const W = 104, H = 62, GAP = 8;
   let cells = "";
   for (let n = 1; n <= 12; n++) {
@@ -230,8 +251,8 @@ function renderDeck() {
       continue;
     }
     const pl = bySlot[String(n)];
-    const fill = pl ? (pl.role === "core" ? "#dbeafe" : "#dcfce7") : "#fafafa";
-    const stroke = pl ? (pl.role === "core" ? "#3b82f6" : "#22c55e") : "#e5e5e5";
+    const fill = pl ? (pl.role === "core" ? "#dbeafe" : pl.role === "stock" ? "#dcfce7" : "#fef3c7") : "#fafafa";
+    const stroke = pl ? (pl.role === "core" ? "#3b82f6" : pl.role === "stock" ? "#22c55e" : "#f59e0b") : "#e5e5e5";
     cells += `<rect x="${x}" y="${y}" width="${W}" height="${H}" rx="4" fill="${fill}" stroke="${stroke}"/>`
            + `<text x="${x + 5}" y="${y + 13}" font-size="9" fill="#bbb">${n}</text>`;
     if (pl) {
@@ -242,7 +263,7 @@ function renderDeck() {
   const svgW = 3 * (W + GAP) - GAP, svgH = 4 * (H + GAP) - GAP;
   document.getElementById("deck-viz").innerHTML =
     `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${cells}</svg>`
-    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp; slot numbers match the OT-2 deck</div>`;
+    + `<div class="muted" style="font-size:11px;margin-top:4px"><span style="color:#3b82f6">&#9632;</span> core &nbsp; <span style="color:#22c55e">&#9632;</span> stock &nbsp; <span style="color:#f59e0b">&#9632;</span> module &nbsp; slot numbers match the OT-2 deck</div>`;
 }
 
 function renderPlates() {
@@ -259,12 +280,38 @@ function newPlate(kind) {
   renderPlates();
 }
 
+// ---------- modules ----------
+function onModuleField(p, kind, idx) {
+  const opts = state.modules.map(m => `<option value="${m.name}" ${p.on_module === m.name ? "selected" : ""}>${m.name || "(unnamed)"}</option>`).join("");
+  return `<label>on module<select data-f="${kind}:${idx}:on_module"><option value="">&mdash; deck slot &mdash;</option>${opts}</select></label>`;
+}
+function moduleCard(m, idx) {
+  return `<div class="plate">
+    <div class="row">
+      <label>module<input value="${m.type}" list="module-options" data-m="${idx}:type" placeholder="heaterShakerModuleV1"></label>
+      <label>name<input value="${m.name}" data-m="${idx}:name" placeholder="shaker1"></label>
+      <label>slot<input value="${m.place}" data-m="${idx}:place" placeholder="1"></label>
+      <label>adapter<input value="${m.adapter}" list="module-options" data-m="${idx}:adapter" placeholder="opentrons_universal_flat_adapter"></label>
+      <button class="small danger" data-delm="${idx}">remove module</button>
+    </div>
+    <p class="muted no-content">A core plate can sit on this module via its "on module" picker; the adapter is required for a heater-shaker.</p>
+  </div>`;
+}
+function renderModules() {
+  const box = document.getElementById("modules");
+  if (box) box.innerHTML = state.modules.map((m, i) => moduleCard(m, i)).join("") || `<p class="muted">No modules.</p>`;
+}
+function newModule() {
+  state.modules.push({ name: "", type: "", place: "", adapter: "" });
+  renderModules(); renderPlates();
+}
+
 // ---------- delegated events ----------
 // Text inputs fire the "input" event. A <select> (the labware picker) reliably
 // fires only "change", so we listen for both. Otherwise the chosen labware never
 // reaches state and gets saved as an empty type.
 function onFieldEdit(e) {
-  const f = e.target.dataset.f, c = e.target.dataset.c;
+  const f = e.target.dataset.f, c = e.target.dataset.c, m = e.target.dataset.m;
   if (f) {
     const [kind, idx, field] = f.split(":");
     const p = (kind === "core" ? state.core : state.stock)[idx];
@@ -273,6 +320,16 @@ function onFieldEdit(e) {
     else if (field === "offz") p.offset.z = e.target.value;
     else p[field] = e.target.value;
     if (field === "type" && e.type === "change") applyLabwareDef(p, e.target.value);
+    if (field === "on_module") {
+      // a plate on a module inherits the module's slot, so the deck view is right
+      const mod = state.modules.find(x => x.name === e.target.value);
+      if (mod && String(mod.place).trim()) p.place = mod.place;
+      renderPlates();
+    }
+    if (["place", "name", "type", "on_module"].includes(field)) renderDeck();
+  } else if (m) {
+    const [idx, field] = m.split(":");
+    state.modules[idx][field] = e.target.value;
     if (["place", "name", "type"].includes(field)) renderDeck();
   } else if (c) {
     const [kind, idx, ci, field] = c.split(":");
@@ -286,6 +343,8 @@ document.addEventListener("click", async e => {
   if (t.dataset.delp) {
     const [kind, idx] = t.dataset.delp.split(":");
     (kind === "core" ? state.core : state.stock).splice(idx, 1); renderPlates();
+  } else if (t.dataset.delm) {
+    state.modules.splice(Number(t.dataset.delm), 1); renderModules(); renderPlates();
   } else if (t.dataset.addc) {
     const [kind, idx] = t.dataset.addc.split(":");
     (kind === "core" ? state.core : state.stock)[idx].content.push({ well: "", substance: "", volume: "" });
@@ -313,8 +372,19 @@ function platesToConfig(list, isCore) {
     const entry = { type: p.type, place: String(p.place),
       offset: { x: num(p.offset.x), y: num(p.offset.y), z: num(p.offset.z) }, content: {} };
     if (isCore && p.max_volume !== "" && p.max_volume != null) entry.max_volume = num(p.max_volume);
+    if (p.on_module) entry.on_module = p.on_module;
     for (const c of p.content) if (c.well) entry.content[c.well] = { substance: c.substance, volume: num(c.volume) };
     out[p.name] = entry;
+  }
+  return out;
+}
+function modulesToConfig(list) {
+  const out = {};
+  for (const m of list) {
+    if (!m.name || !m.type) continue;
+    const entry = { type: m.type, place: String(m.place) };
+    if (m.adapter) entry.adapter = m.adapter;
+    out[m.name] = entry;
   }
   return out;
 }
@@ -341,7 +411,7 @@ function buildConfig() {
   const r = document.getElementById("pip-right").value.trim();
   if (l) pipettes.left = { model: l };
   if (r) pipettes.right = { model: r };
-  return { pipettes, core_plates: platesToConfig(state.core, true), stock_plates: platesToConfig(state.stock, false) };
+  return { pipettes, core_plates: platesToConfig(state.core, true), stock_plates: platesToConfig(state.stock, false), modules: modulesToConfig(state.modules) };
 }
 async function saveConfig() {
   document.getElementById("save-err").textContent = "";
@@ -391,13 +461,15 @@ function loadIntoForm(cfg) {
   document.getElementById("pip-left").value = cfg.pipettes.left ? cfg.pipettes.left.model : "";
   document.getElementById("pip-right").value = cfg.pipettes.right ? cfg.pipettes.right.model : "";
   const toRows = obj => Object.entries(obj).map(([name, p]) => ({
-    name, type: p.type, place: p.place, max_volume: p.max_volume ?? "",
+    name, type: p.type, place: p.place, max_volume: p.max_volume ?? "", on_module: p.on_module ?? "",
     offset: { x: (p.offset || {}).x ?? 0, y: (p.offset || {}).y ?? 0, z: (p.offset || {}).z ?? 0 },
     content: Object.entries(p.content || {}).map(([well, c]) => ({ well, substance: c.substance, volume: c.volume })),
     wells: [], capacity: null,
   }));
   state.core = toRows(cfg.core_plates || {});
   state.stock = toRows(cfg.stock_plates || {});
+  state.modules = Object.entries(cfg.modules || {}).map(([name, m]) => ({ name, type: m.type, place: m.place ?? "", adapter: m.adapter ?? "" }));
+  renderModules();
   renderPlates();
   // pull definitions for file-plates so apply-to-all and the capacity cap work
   [...state.core, ...state.stock].forEach(p => { if ((p.type || "").endsWith(".json")) applyLabwareDef(p, p.type); });
@@ -440,6 +512,7 @@ async function initFromParams() {
 // ---------- wiring ----------
 document.getElementById("btn-add-core").onclick = () => newPlate("core");
 document.getElementById("btn-add-stock").onclick = () => newPlate("stock");
+document.getElementById("btn-add-module").onclick = () => newModule();
 document.getElementById("btn-save").onclick = saveConfig;
 
 // ---------- drafts (config editor uses /user/draft/config directly, since api() is deck-prefixed) ----------
@@ -459,7 +532,7 @@ document.getElementById("btn-save-draft").onclick = async () => {
   } catch (e) { msg(e.message, false); }
 };
 async function restoreConfigDraft(content) {
-  loadIntoForm(content.config || { pipettes: {}, core_plates: {}, stock_plates: {} });
+  loadIntoForm(content.config || { pipettes: {}, core_plates: {}, stock_plates: {}, modules: {} });
   document.getElementById("config-name").value = content.name || "";
   baseId = content.base_id || null;
   const h = document.getElementById("heritage");

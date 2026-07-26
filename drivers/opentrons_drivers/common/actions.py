@@ -1,7 +1,7 @@
 import time
 from typing import cast
 from opentrons_drivers.common.custom_types import ActionFn
-from opentrons_drivers.common.methods import LIQUID_METHODS
+from opentrons_drivers.common.methods import LIQUID_METHODS, MODULE_METHODS
 from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
 from opentrons.protocol_api.labware import Labware, Well
 from opentrons.types import Point, Location
@@ -105,6 +105,7 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         if k not in {
             "source", "receiver", "amount", "method",
             "pipette_mount", "swell_time", "swell_cycle", "tip_cycle",
+            "wells", "source_wells",
         }
     }
 
@@ -517,4 +518,48 @@ def calibration_plate(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     for well in targets:
         pipette.move_to(well.top(clearance))
     pipette.return_tip()
+    return True
+
+
+@register_action("module_action")
+def module_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """
+    Dispatch a module operation to a registered MODULE_METHODS function.
+
+    The module object is looked up by name in ctx["modules"] (loaded at boot),
+    and the method by name in MODULE_METHODS. Method params ride as top-level
+    keys and are forwarded as kwargs; "module" and "method" are reserved.
+    protocol is handed through for methods that need protocol.delay.
+
+    Parameters:
+        ctx (StaticCtx): Device state (modules, protocol, system_state).
+        arg (dict[str, JSONType]): Instruction arguments.
+            - module: str            (name of a loaded module)
+            - method: str            (a MODULE_METHODS key)
+            - ...plus any method-specific kwargs (rpm, minutes, action, ...)
+
+    Returns:
+        bool: True upon completion.
+    """
+    module_name = cast(str, arg["module"])
+    modules = ctx["modules"]
+    if module_name not in modules:
+        raise RuntimeError(
+            f"No module '{module_name}' loaded. Available: {sorted(modules.keys())}"
+        )
+    module = modules[module_name]
+
+    method = cast(str, arg["method"])
+    fn = MODULE_METHODS.get(method)
+    if fn is None:
+        raise ValueError(
+            f"Unknown module method '{method}'. Available: {list(MODULE_METHODS)}"
+        )
+
+    extra = {k: v for k, v in arg.items() if k not in {"module", "method"}}
+    fn(module, ctx["protocol"], **extra)
+
+    state = ctx["system_state"]
+    state["last_action"] = "module"
+    state["timestamp"] = time.time()
     return True

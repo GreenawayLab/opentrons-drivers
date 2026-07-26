@@ -23,9 +23,10 @@ from opentrons_control.backend.app.security import (
     get_current_user,
     hash_password,
     verify_password,
+    VALID_PERMISSIONS,
 )
 from opentrons_control.backend.app.db.db_session import get_db
-from opentrons_control.backend.app.db.runner import execute_returning, fetch_one
+from opentrons_control.backend.app.db.runner import execute, execute_returning, fetch_one
 
 router = APIRouter(prefix="/api/auth")
 
@@ -72,9 +73,7 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
     if fetch_one(db, "users/get_by_name.sql", {"name": req.name}) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=f"the name '{req.name}' is taken")
 
-    # DEV DEFAULT: every new account is created as admin so test identities need
-    # no permission granting. Revert to invite["target_role"] before a real deploy.
-    role = "admin"
+    role = invite["target_role"]
     user = execute_returning(
         db,
         "users/insert.sql",
@@ -87,6 +86,15 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
     if not consumed:
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, detail="that code was just used; ask for a new one")
+
+    # DEV DEFAULT: grant every capability to each new user so test identities need
+    # no manual permission granting. They stay role="user" (landing on the normal
+    # user workspace, not the admin page); admins already have all permissions, so
+    # skip them. Remove this loop before a real deploy to restore invite scoping.
+    if role != "admin":
+        for perm in sorted(VALID_PERMISSIONS):
+            execute(db, "permissions/grant.sql", {"user_id": user["id"], "permission": perm}, commit=False)
+
     db.commit()
 
     token = create_token(user["id"])

@@ -9,7 +9,11 @@ is plain data, and the one opentrons-importing dependency (its home module)
 is deliberately not reached into.
 
 Keep this in lockstep with the agent-side ``BaseConfig`` via a shared
-example fixture; the two type-expressions describe one JSON contract.
+example fixture; the two type-expressions describe one JSON contract. The
+one intentional divergence is ``PipetteInfo.channels``: it is baked here so
+the checker and generator can reason off-robot, and the agent ignores it
+(it reads ``pipette.channels`` from the live instrument), so the agent-side
+TypedDict does not carry it.
 
 Steps stay action-agnostic (``action`` + ``payload``) so a later ``delay``
 or ``pause`` is a new payload shape, not a schema change.
@@ -48,6 +52,7 @@ class PlateInfo(BaseModel):
     max_volume: float | None = None
     offset: dict[str, float] = Field(default_factory=dict)
     content: dict[str, PlateContent] = Field(default_factory=dict)
+    on_module: str | None = None
 
     @model_validator(mode="after")
     def _content_within_max(self) -> "PlateInfo":
@@ -65,9 +70,35 @@ class PipetteInfo(BaseModel):
     """Pipette mount configuration.
 
     :param model: Opentrons model string, e.g. ``p300_single_gen2``.
+    :param channels: Channel count (1, 8, or 96), baked at config save so the
+        checker and generator can reason without a live pipette. Defaults to 1
+        so configs authored before this field existed validate as single-channel.
     """
 
     model: str
+    channels: int = 1
+
+    @field_validator("channels")
+    @classmethod
+    def _known_channels(cls, v: int) -> int:
+        """Reject a channel count that is not a real pipette layout."""
+        if v not in (1, 8, 96):
+            raise ValueError(f"channels must be 1, 8, or 96, got {v}")
+        return v
+
+
+class ModuleInfo(BaseModel):
+    """A hardware module on the deck (heater-shaker, temperature module, etc.).
+
+    :param type: Opentrons module load name, e.g. ``heaterShakerModuleV1``.
+    :param place: Deck slot the module occupies.
+    :param adapter: Optional adapter load name loaded onto the module; a
+        heater-shaker requires a thermal adapter before labware can sit on it.
+    """
+
+    type: str
+    place: str
+    adapter: str | None = None
 
 
 class BaseConfig(BaseModel):
@@ -79,11 +110,14 @@ class BaseConfig(BaseModel):
     :param core_plates: Plate name to plate info (destinations; ``tiprack_*``
         names are support labware and carry no liquid accounting).
     :param stock_plates: Plate name to plate info (sources).
+    :param modules: Module name to module info (heater-shaker etc.). A plate
+        placed on a module sets its ``on_module`` to the module's name.
     """
 
     pipettes: dict[str, PipetteInfo]
     core_plates: dict[str, PlateInfo]
     stock_plates: dict[str, PlateInfo]
+    modules: dict[str, ModuleInfo] = Field(default_factory=dict)
 
     @field_validator("pipettes")
     @classmethod
@@ -185,3 +219,98 @@ def custom_labware_refs(config: BaseConfig) -> set[str]:
         if plate.type.endswith(".json"):
             refs.add(plate.type)
     return refs
+
+
+# ---------------------------------------------------------------------------
+# Pipette channel derivation and multichannel column resolution.
+#
+# Channels is a pure function of the pipette load name; deriving it here gives
+# the deck API one place to compute it (at pipette add-time and at config save)
+# and the generator a geometry-free way to expand a column. resolve_column
+# mirrors the agent's on-robot resolution so the checker replays the identical
+# atomic stream the agent executes.
+# ---------------------------------------------------------------------------
+
+
+#: Whole-token map, matched against the underscore-split load name. Whole tokens
+#: (not substrings) so "8channel" never matches inside "96channel". Covers both
+#: conventions: OT-2 (single/multi) and Flex (Nchannel).
+_CHANNEL_TOKENS: dict[str, int] = {
+    "single": 1,
+    "1channel": 1,
+    "multi": 8,
+    "8channel": 8,
+    "96channel": 96,
+}
+
+
+def pipette_channels(model: str) -> int:
+    """Derive the channel count from an opentrons pipette load name.
+
+    Two naming conventions are in use: OT-2 (``p300_single_gen2``,
+    ``p300_multi_gen2``) and Flex (``flex_1channel_1000``, ``flex_8channel_1000``,
+    ``flex_96channel_1000``). The name is split on underscores and matched against
+    a fixed token map, so an unrecognised name fails loudly here rather than being
+    guessed at.
+
+    :param model: The pipette load name.
+    :returns: 1, 8, or 96.
+    :raises ValueError: if no channel token is present in the name.
+    """
+    tokens = set(model.lower().split("_"))
+    for token, n in _CHANNEL_TOKENS.items():
+        if token in tokens:
+            return n
+    raise ValueError(f"cannot determine channel count from pipette model '{model}'")
+
+
+def labware_columns(definition: dict[str, Any]) -> list[list[str]]:
+    """Return the labware's columns as lists of well labels, top to bottom.
+
+    Reads the definition's ``ordering`` — the opentrons field that lists each
+    column's wells in physical order — which is exactly the column membership a
+    multichannel pipette needs, and gives it without an opentrons import.
+
+    :param definition: A parsed opentrons labware-definition JSON.
+    :raises ValueError: if ``ordering`` is missing or malformed.
+    """
+    ordering = definition.get("ordering")
+    if (
+        not isinstance(ordering, list)
+        or not ordering
+        or not all(isinstance(col, list) and col for col in ordering)
+    ):
+        raise ValueError("labware definition has no usable 'ordering' to derive columns from")
+    return [list(col) for col in ordering]
+
+
+def resolve_column(anchor: str, channels: int, definition: dict[str, Any]) -> list[str]:
+    """Return the wells a pipette engages when it targets ``anchor``.
+
+    Single-channel returns just the anchor. A multichannel returns the column
+    whose head (row A) is ``anchor``; that column must hold exactly ``channels``
+    wells. This mirrors the agent's on-robot resolution — same row-A anchor rule,
+    same exact-length rule — so the checker replays the identical stream the agent
+    executes rather than approximating it.
+
+    :param anchor: The well targeted (a column head for a multichannel).
+    :param channels: The pipette channel count.
+    :param definition: The receiving/aspirating plate's labware definition.
+    :returns: The engaged wells, top to bottom.
+    :raises ValueError: if a multichannel anchor is not a column head, or its
+        column does not hold exactly ``channels`` wells.
+    """
+    if channels == 1:
+        return [anchor]
+    for column in labware_columns(definition):
+        if column[0] == anchor:
+            if len(column) != channels:
+                raise ValueError(
+                    f"a {channels}-channel pipette needs a column of {channels} wells, "
+                    f"but the column headed by {anchor} has {len(column)}"
+                )
+            return column
+    raise ValueError(
+        f"a {channels}-channel pipette must target a column head (row A); "
+        f"'{anchor}' heads no column of this labware"
+    )

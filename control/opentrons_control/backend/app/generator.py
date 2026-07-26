@@ -150,6 +150,26 @@ def plan_to_protocol(
     for i, step in enumerate(steps):
         kind = step.get("kind")
         how = step.get("how") or {}
+
+        # module ops carry no transfers: emit one module_action and move on. The
+        # module method name and its params ride in `how`, mirroring how a
+        # transfer step carries its liquid method. Reserved keys are written after
+        # the params spread so a stray param cannot shadow them.
+        if kind == "module_op":
+            module = step.get("module")
+            method = how.get("method")
+            params = how.get("params") or {}
+            if not module:
+                incomplete.append(f"step {i + 1}: module op has no module")
+            elif not method:
+                incomplete.append(f"step {i + 1}: module op has no method")
+            else:
+                out.append(Step(
+                    action="module_action",
+                    payload={**params, "module": module, "method": method},
+                ))
+            continue
+
         method = how.get("method") or DEFAULT_METHOD
         params = how.get("params") or {}
         pipette = how.get("pipette") or "auto"

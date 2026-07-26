@@ -10,18 +10,33 @@ labware JSON.
 This is the code path the ``check`` endpoint calls. It is *not* the code
 path the OT executes; the anti-drift contract between them is a set of
 golden test vectors, since they cannot share a process once opentrons is
-excluded here.
+excluded here. Multichannel makes that contract load-bearing: the agent
+derives the touched column from the live pipette (``pipette.channels``),
+while this checker has no pipette object and is *told* the wells instead
+(see below), so a golden vector for a one-column multichannel op that both
+must agree on is exactly the drift guard to keep.
 
-Accounting rules (v1, single-channel):
+Accounting rules:
     * ``amount`` is per destination well.
-    * A stock source depletes by ``amount * n_destinations``.
-    * A core source depletes its own well by that total.
-    * Each destination fills by ``amount``; exceeding ``max_volume`` errors.
+    * A transfer touches one well (single-channel) or a column of N wells
+      (multichannel). The wells are carried explicitly in the payload —
+      ``wells`` for the receiver, ``source_wells`` for a core source — and
+      default to the single anchor well when absent, so single-channel plans
+      are unchanged. The checker never derives geometry; it reads the resolved
+      wells the frontend produced, mirroring the agent that derives them from
+      the live pipette.
+    * Stock -> core: one aspiration feeds every destination, so the stock
+      depletes by ``amount * n_wells`` and each destination fills by ``amount``.
+    * Core -> core: paired columns — channel i moves ``amount`` from source
+      well i (carrying its composition) into destination well i.
+    * A destination exceeding ``max_volume`` errors.
 Unknown actions pass through with a warning, keeping dispatch agnostic.
 
-Known v1 gaps (flagged, not silently approximated):
+Known gaps (flagged, not silently approximated):
     * Stock is tracked as a per-substance total; multi-well stocks with
-      per-well aspiration limits are not modelled (fine for single-well stocks).
+      per-well aspiration limits are not modelled (fine for single-well /
+      reservoir stocks). A multichannel draw is likewise treated as coming
+      from that per-substance total, not a specific stock column.
     * ``min_residual`` is not in ``BaseConfig`` (a runtime concern), so it is 0.
     * Well existence is not validated here; the editor only offers wells the
       labware definition declares, so steps reference real wells by construction.
@@ -85,19 +100,30 @@ class SimState:
         return cls(stocks=stocks, core=core, cap=cap)
 
 
-def _expand_wells(ref: str) -> list[str]:
-    """Return the wells a receiver ref denotes.
+def _wells_from(payload: dict[str, Any], key: str, anchor: str) -> list[str]:
+    """Return the physical wells an op touches: an explicit list, or the anchor.
 
-    The simulator consumes atomic single-well transfers. Well selection and any
-    rectangular expansion happen upstream (the editor grid is sized from the
-    labware definition, so it knows the real rows and columns; the generator
-    emits one transfer per well). A range reaching here means a producer skipped
-    that expansion, so it is a hard error rather than a guess against an assumed
-    grid.
+    A single-channel op carries no ``key`` list and falls back to just the anchor
+    well, so single-channel accounting is unchanged. A multichannel op carries the
+    frontend-resolved column under ``key`` — the checker has no pipette object and
+    no labware geometry, so it is told the wells rather than deriving them. A range
+    label (containing ``":"``) is rejected: expansion happens upstream, never here,
+    which keeps the checker geometry-free.
+
+    :param payload: The transfer_execution payload.
+    :param key: ``"wells"`` (receiver) or ``"source_wells"`` (core source).
+    :param anchor: The single well to fall back to when ``key`` is absent.
+    :raises SimError: if the list is malformed or a label is an unexpanded range.
     """
-    if ":" in ref:
-        raise SimError(f"well range '{ref}' must be expanded before the simulator")
-    return [ref]
+    wells = payload.get(key)
+    if wells is None:
+        wells = [anchor]
+    if not isinstance(wells, list) or not wells or not all(isinstance(w, str) for w in wells):
+        raise SimError(f"'{key}' must be a non-empty list of well labels")
+    for w in wells:
+        if ":" in w:
+            raise SimError(f"well range '{w}' must be expanded before the simulator")
+    return wells
 
 
 def _well_total(comp: dict[str, float]) -> float:
@@ -106,7 +132,13 @@ def _well_total(comp: dict[str, float]) -> float:
 
 
 def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) -> None:
-    """Apply one ``transfer_execution`` payload to state, recording errors on ``v``."""
+    """Apply one ``transfer_execution`` payload to state, recording errors on ``v``.
+
+    Handles both a single-well transfer and a multichannel column: the touched
+    wells come from ``payload["wells"]`` / ``payload["source_wells"]`` when present
+    and default to the anchor wells otherwise, so a single-channel payload behaves
+    exactly as before.
+    """
     source = payload.get("source")
     receiver = payload.get("receiver")
     if not isinstance(source, list) or not isinstance(receiver, list):
@@ -124,69 +156,97 @@ def _apply_transfer(state: SimState, payload: dict[str, Any], v: StepVerdict) ->
         v.errors.append("receiver must be [plate, well]")
         return
 
-    dst_plate, dst_ref = receiver[0], receiver[1]
+    dst_plate = receiver[0]
     if dst_plate not in state.core:
         v.errors.append(f"unknown core plate '{dst_plate}'")
         return
     try:
-        dests = _expand_wells(dst_ref)
+        dests = _wells_from(payload, "wells", receiver[1])
     except SimError as exc:
         v.errors.append(str(exc))
         return
 
-    total = amount * len(dests)
+    cap = state.cap.get(dst_plate)
 
-    # ---- source depletion: work out the mix that lands in each destination ----
+    # ---- STOCK -> CORE: one aspiration of a reagent fans out over the column ----
     if len(source) == 1:
         sub = source[0]
         if sub not in state.stocks:
             v.errors.append(f"unknown stock '{sub}'")
             return
+        total = amount * len(dests)
         if state.stocks[sub] - total < 0:
             v.errors.append(
                 f"stock '{sub}' short: need {total:g} µL, have {state.stocks[sub]:g} µL"
             )
             return
         state.stocks[sub] -= total
-        per_well_mix = {sub: amount}
+        for well in dests:
+            comp = state.core[dst_plate].setdefault(well, {})
+            comp[sub] = comp.get(sub, 0.0) + amount
+            new_total = _well_total(comp)
+            if cap is not None and new_total > cap:
+                v.errors.append(f"{dst_plate}·{well} overfills: {new_total:g} > {cap:g} µL")
+
+    # ---- CORE -> CORE: paired columns, channel i moves source i into dest i ----
     elif len(source) == 2:
-        s_plate, s_well = source
+        s_plate = source[0]
         if s_plate not in state.core:
             v.errors.append(f"unknown core plate '{s_plate}'")
             return
-        src_comp = state.core[s_plate].get(s_well, {})
-        have = _well_total(src_comp)
-        if have < total:
+        try:
+            srcs = _wells_from(payload, "source_wells", source[1])
+        except SimError as exc:
+            v.errors.append(str(exc))
+            return
+        if len(srcs) != len(dests):
             v.errors.append(
-                f"{s_plate}·{s_well} short: need {total:g} µL, have {have:g} µL"
+                f"source has {len(srcs)} well(s) but receiver has {len(dests)}; "
+                f"a column transfer pairs them one to one"
             )
             return
-        # a well aspiration removes each substance in proportion to its share,
-        # so the moved liquid carries the source well's composition
-        frac = total / have
-        removed: dict[str, float] = {}
-        for sub_name, vol in list(src_comp.items()):
-            take = vol * frac
-            src_comp[sub_name] = vol - take
-            removed[sub_name] = take
-        per_well_mix = {sub_name: vol / len(dests) for sub_name, vol in removed.items()}
+
+        # each pair is independent: a channel aspirates `amount` from its own
+        # source well (carrying that well's composition) into its own dest well.
+        # A short source is recorded and that pair skipped, so the report lists
+        # every short well rather than stopping at the first.
+        for s_well, d_well in zip(srcs, dests):
+            src_comp = state.core[s_plate].get(s_well, {})
+            have = _well_total(src_comp)
+            if have < amount:
+                v.errors.append(
+                    f"{s_plate}·{s_well} short: need {amount:g} µL, have {have:g} µL"
+                )
+                continue
+            frac = amount / have
+            dst_comp = state.core[dst_plate].setdefault(d_well, {})
+            for sub_name, vol in list(src_comp.items()):
+                take = vol * frac
+                src_comp[sub_name] = vol - take
+                dst_comp[sub_name] = dst_comp.get(sub_name, 0.0) + take
+            new_total = _well_total(dst_comp)
+            if cap is not None and new_total > cap:
+                v.errors.append(f"{dst_plate}·{d_well} overfills: {new_total:g} > {cap:g} µL")
+
     else:
         v.errors.append("source must be [substance] or [plate, well]")
         return
 
-    # ---- destination fill + overfill check ----
-    cap = state.cap.get(dst_plate)
-    for well in dests:
-        comp = state.core[dst_plate].setdefault(well, {})
-        for sub_name, vol in per_well_mix.items():
-            comp[sub_name] = comp.get(sub_name, 0.0) + vol
-        new_total = _well_total(comp)
-        if cap is not None and new_total > cap:
-            v.errors.append(f"{dst_plate}·{well} overfills: {new_total:g} > {cap:g} µL")
+
+def _apply_module(state: SimState, payload: dict[str, Any], v: StepVerdict) -> None:
+    """Account for a ``module_action`` step: it moves no liquid.
+
+    Module operations (shake, latch, delay) have no effect on stock or well
+    volumes, so there is nothing to check or update. Registering an explicit
+    no-op keeps a legitimate module step from surfacing as an ``action not
+    simulated`` warning, while an unknown action still warns.
+    """
+    return None
 
 
 _ACCOUNTERS = {
     "transfer_execution": _apply_transfer,
+    "module_action": _apply_module,
 }
 
 

@@ -146,31 +146,52 @@ def check_plan(
 ) -> dict[str, Any]:
     """Dry-run the plan's steps against its pinned config.
 
-    Expands the steps into the atomic transfer stream (resolving fill_to), runs
-    the simulator, and returns a three-state verdict: incomplete (some volume is
-    unset), invalid (an overflow, stock shortfall, or non-positive amount), or
-    valid. Errors and warnings are flat lists of human-readable messages.
+    Expands the steps into the atomic stream (resolving fill_to and multichannel
+    columns), runs the simulator, and returns a three-state verdict: incomplete
+    (some volume is unset), invalid (an overflow, stock shortfall, or non-positive
+    amount), or valid. Errors and warnings are flat lists of human-readable
+    messages.
     """
     row = fetch_one(db, "deck_configs/get.sql", {"id": req.config_id})
     if row is None:
         raise HTTPException(status_code=400, detail=f"unknown config {req.config_id}")
     config = BaseConfig.model_validate(row["config"])
-    protocol, incomplete, gen_errors = plan_to_protocol(config, req.steps)
+
+    # multichannel column resolution needs each core plate's geometry; fetch the
+    # custom (.json) labware definitions the config references, keyed by plate
+    # name. Single-channel plans don't use these, so a missing def is harmless.
+    labware_defs: dict[str, Any] = {}
+    for pname, plate in config.core_plates.items():
+        if plate.type.endswith(".json"):
+            lw = fetch_one(db, "labware/get.sql", {"name": plate.type})
+            if lw is not None:
+                labware_defs[pname] = lw["definition"]
+
+    protocol, incomplete, gen_errors = plan_to_protocol(config, req.steps, labware_defs=labware_defs)
     report = simulate(protocol)
 
     def _describe(ref: list) -> str:
         return ref[0] if len(ref) == 1 else f"{ref[0]}/{ref[1]}"
 
-    # a per-transfer trace: what each atomic step does, and where it first breaks.
+    # a per-step trace: what each atomic step does, and where it first breaks.
     # Once a transfer fails, later ones usually fail for the same reason (a stock
     # stays exhausted), so we surface the first failure and how far the run got
-    # rather than repeating the consequence on every remaining transfer.
+    # rather than repeating the consequence on every remaining transfer. Not every
+    # step is a transfer: a module_action carries module/method, not source/
+    # receiver, so it is described on its own terms and never indexed for a
+    # source/receiver it does not have.
     trace: list[dict[str, Any]] = []
     first_error: dict[str, Any] | None = None
     for i, (step, verdict) in enumerate(zip(protocol.steps, report.verdicts)):
         payload = step.payload
-        desc = f"{_describe(payload['source'])} -> {_describe(payload['receiver'])}"
-        amount = payload.get("amount")
+        if step.action == "transfer_execution":
+            desc = f"{_describe(payload['source'])} -> {_describe(payload['receiver'])}"
+            amount = payload.get("amount")
+        else:
+            module = payload.get("module")
+            method = payload.get("method")
+            desc = f"{module}: {method}" if module else (method or step.action)
+            amount = None
         err = verdict.errors[0] if verdict.errors else None
         entry: dict[str, Any] = {"n": i + 1, "desc": desc, "amount": amount, "ok": err is None}
         if err:

@@ -132,6 +132,8 @@ class Agent:
             "core_amounts": self.robot.core_amounts,
             "stock_amounts": self.robot.stock_amounts,
             "pipettes": self.robot.pipettes,
+            "modules": self.robot.modules,
+            "protocol": protocol,
             "system_state": {},
         }
 

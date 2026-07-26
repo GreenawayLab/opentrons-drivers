@@ -1,6 +1,6 @@
 from opentrons.protocol_api.instrument_context import InstrumentContext
 from opentrons.protocol_api.labware import Well
-from typing import TypedDict, Dict, List, Union, Callable, Optional
+from typing import TypedDict, Dict, List, Union, Callable, Optional, Any
 
 #------------ Stock and Core Well Definitions ------------
 
@@ -41,10 +41,18 @@ class SystemState(TypedDict, total=False):
     timestamp: float                    # when the last action happened
 
 class StaticCtx(TypedDict):
-    """Holds all setup information for action functions: amounts, pipettes, state."""
+    """Holds all setup information for action functions: amounts, pipettes, state.
+
+    ``protocol`` and ``modules`` are the hardware objects module actions need:
+    ``protocol`` for ``protocol.delay`` during a shake, ``modules`` for the loaded
+    module contexts keyed by name. Both are opentrons objects, so they are typed
+    ``Any`` at this wire boundary (the module-context union is version-specific).
+    """
     core_amounts: Dict[str, Dict[str, CoreWell]]
     stock_amounts: Dict[str, List[StockWell]]
     pipettes: Dict[str, InstrumentContext]
+    modules: Dict[str, Any]
+    protocol: Any
     system_state: SystemState
 
 #------------ Action Function Type Definition ------------
@@ -66,6 +74,14 @@ class PlateInfo(TypedDict, total=False):
     max_volume: float                # µL max capacity per well
     offset: Dict[str, float]         # x/y/z adjustments
     content: Dict[str, PlateContent] # optional per-well fill info before the expt
+    on_module: str                   # if set, plate loads onto this module, not a slot
+
+# ---------- Module configuration ----------
+class ModuleInfo(TypedDict, total=False):
+    """Auxiliary hardware-module information for initialization."""
+    type: str                        # opentrons module load name, e.g. heaterShakerModuleV1
+    place: str                       # deck slot the module occupies
+    adapter: str                     # optional adapter load name loaded onto the module
 
 # ---------- Pipette mount configuration ----------
 class PipetteInfo(TypedDict):
@@ -78,6 +94,7 @@ class BaseConfig(TypedDict):
     pipettes: Dict[str, PipetteInfo]              # e.g. {"left": {...}, "right": {...}}
     core_plates: Dict[str, PlateInfo]             # user-assigned plates
     stock_plates: Dict[str, PlateInfo]            # virtual source-only plates
+    modules: Dict[str, ModuleInfo]                # hardware modules on the deck
 
 # ---------- Full agent config for Agent class ----------
 class AgentConfig(TypedDict):

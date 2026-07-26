@@ -63,6 +63,7 @@
       New step:
       <button class="small" data-kind="add_stock">add stock &rarr; core</button>
       <button class="small" data-kind="move_core">move core &rarr; core</button>
+      <button class="small" data-kind="module_op">module op (shake)</button>
       <button class="small" data-cancel="1">cancel</button>
     </div>
     <table id="steps-table">
@@ -74,7 +75,7 @@
   </section>
 
   <section id="editor" style="display:none">
-    <h3>Configure step <span id="edit-idx"></span> <span id="edit-pill"></span></h3>
+    <h3>Configure step <span id="edit-idx"></span> <span id="edit-pill"></span> <button id="edit-done-top" class="small">Done</button></h3>
 
     <div id="hdr-add" style="display:none">
       <label>Destination plate <select id="edit-plate"></select></label>
@@ -83,6 +84,12 @@
       <label>Source plate <select id="edit-src"></select></label>
       <label>Receiver plate <select id="edit-dst"></select></label>
     </div>
+    <div id="hdr-module" style="display:none">
+      <label>Module <select id="edit-module"></select></label>
+    </div>
+
+    <p id="edit-hint" class="muted"></p>
+    <div id="how-section" class="how-section"></div>
 
     <div class="modes" id="modes"></div>
 
@@ -101,27 +108,21 @@
         <label><input type="checkbox" id="ord-custom"> keep selection order</label>
         <span class="muted">grid numbers show the fill sequence</span>
       </div>
-      <details style="margin-top:8px">
-        <summary class="muted" style="cursor:pointer">Paste plate contents (JSON)</summary>
-        <p class="muted" style="margin:6px 0">Dict of well &rarr; {substance, volume}. Replaces the current selection; keys must be wells of this plate, and every entry needs a "volume".</p>
-        <textarea id="as-json" rows="6" style="width:100%;display:block;margin:6px 0;font-family:monospace" placeholder='{ "A1": {"substance": "DMSO", "volume": 5000} }'></textarea>
-        <button class="small" id="as-json-btn">apply JSON</button>
-        <span id="as-json-note" class="muted"></span>
-      </details>
     </div>
 
     <!-- move_core edge drawing -->
     <div id="phase-move" style="display:none">
-      <p class="muted"><span id="armed">Click a source well, then a receiver well, to link one transfer.</span>
-        <button id="btn-map-matching" class="small">map matching wells</button></p>
-      <div class="two-grids">
-        <div><b>Source</b><div id="src-grid" class="grid"></div></div>
-        <div><b>Receiver</b><div id="dst-grid" class="grid"></div></div>
+      <div id="move-select">
+        <p class="muted"><span id="armed">Click a source well, then a receiver well, to link one transfer.</span>
+          <button id="btn-map-matching" class="small">map matching wells</button></p>
+        <div class="two-grids">
+          <div><b>Source</b><div id="src-grid" class="grid"></div></div>
+          <div><b>Receiver</b><div id="dst-grid" class="grid"></div></div>
+        </div>
       </div>
       <details open>
         <summary class="muted" style="cursor:pointer">Transfers</summary>
-      <table id="edges-table"><thead><tr><th></th><th>transfer</th><th>µL</th><th></th></tr></thead><tbody></tbody></table>
-      <div class="fill-tools">
+      <div id="move-vol" class="fill-tools">
         apply constant <input id="mc-const" type="number" style="width:90px"> <button class="small" id="mc-const-btn">to all transfers</button>
         <div style="margin-top:6px">paste column — one volume per transfer, top to bottom
           <textarea id="mc-paste" rows="3" style="width:100%;display:block;margin:6px 0" placeholder="one number per line, in transfer order"></textarea>
@@ -129,7 +130,11 @@
           <span id="mc-note" class="muted"></span>
         </div>
       </div>
+      <table id="edges-table"><thead><tr><th></th><th>transfer</th><th>µL</th><th></th></tr></thead><tbody></tbody></table>
     </div>
+
+    <!-- module op -->
+    <div id="phase-module" style="display:none"></div>
 
     <!-- shared volumes phase -->
     <div id="phase-vol" style="display:none">
@@ -141,8 +146,10 @@
           <button class="small" id="as-apply-vol">apply to all</button>
           <button class="small danger" id="as-clear">clear volumes</button>
         </div>
-        <div style="margin-top:6px">paste substance and volume per well, one per line, in row-major order
-          <textarea id="as-paste" rows="3" style="width:100%;display:block;margin:6px 0" placeholder="water&#9;100&#10;AETC&#9;50"></textarea>
+        <div style="margin-top:6px">
+          <label><input type="radio" name="paste-fmt" id="paste-excel" checked> Excel (substance&#8677;volume per well, row-major)</label>
+          <label><input type="radio" name="paste-fmt" id="paste-json"> JSON (well &rarr; {substance, volume})</label>
+          <textarea id="as-paste" rows="4" style="width:100%;display:block;margin:6px 0;font-family:monospace" placeholder="water&#9;100&#10;AETC&#9;50"></textarea>
           <button class="small" id="as-paste-btn">apply paste</button>
           <span id="as-note" class="muted"></span>
         </div>
@@ -152,8 +159,6 @@
         <table id="assign-table"><thead><tr><th>Well</th><th>Substance</th><th>µL</th></tr></thead><tbody></tbody></table>
       </details>
     </div>
-
-    <div id="how-section" class="how-section"></div>
 
     <button id="edit-done" class="small">Done</button>
   </section>
@@ -167,7 +172,7 @@
   .branch { margin: 8px 0; padding: 8px 12px; background: #f0f7ff; border: 1px solid #d0e3f5; border-radius: 6px; }
   #msg .error { color: #a32d2d; } #msg .ok { color: #0f6e56; }
   .pill { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #eee; }
-  .pill.add { background: #e3f0ff; } .pill.move { background: #fdeede; }
+  .pill.add { background: #e3f0ff; } .pill.move { background: #fdeede; } .pill.module { background: #fef3c7; }
   #editor { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px 16px; }
   .modes { margin: 10px 0 6px; }
   .modes button { border: 1px solid #ccc; background: #fff; }
@@ -224,11 +229,17 @@ const wellCache = {};
 
 function newStep(kind) {
   const base = { id: nextId++, kind, how: {} };
-  return kind === "add_stock"
-    ? { ...base, dest_plate: "", wells: [], assignments: {} }
-    : { ...base, source_plate: "", receiver_plate: "", edges: [] };
+  if (kind === "add_stock") return { ...base, dest_plate: "", wells: [], assignments: {} };
+  if (kind === "move_core") return { ...base, source_plate: "", receiver_plate: "", edges: [] };
+  return { ...base, module: "" };
 }
 function stepSummary(s) {
+  if (s.kind === "module_op") {
+    if (!s.module) return "no module";
+    const meth = (s.how || {}).method || "?";
+    const ps = Object.entries((s.how || {}).params || {}).map(([k, v]) => `${k}=${v}`).join(", ");
+    return `${s.module}: ${meth}${ps ? " (" + ps + ")" : ""}`;
+  }
   if (s.kind === "add_stock") {
     if (!s.dest_plate) return "not configured yet";
     const a = s.assignments || {};
@@ -245,10 +256,11 @@ function stepSummary(s) {
 }
 function renderSteps() {
   document.querySelector("#steps-table tbody").innerHTML = plan.steps.map((s, i) => {
-    const isAdd = s.kind === "add_stock";
+    const pc = s.kind === "add_stock" ? "add" : s.kind === "move_core" ? "move" : "module";
+    const pt = s.kind === "add_stock" ? "add stock" : s.kind === "move_core" ? "move core" : "module op";
     return `<tr>
       <td>${i + 1}</td>
-      <td><span class="pill ${isAdd ? "add" : "move"}">${isAdd ? "add stock" : "move core"}</span></td>
+      <td><span class="pill ${pc}">${pt}</span></td>
       <td class="muted">${stepSummary(s)}</td>
       <td>
         <button class="small" data-up="${s.id}" ${i === 0 ? "disabled" : ""}>&uarr;</button>
@@ -343,10 +355,10 @@ let editGrid = null, editSel = new Set(), editAnchor = null;   // add_stock
 let srcGrid = null, dstGrid = null, armedSrc = null;           // move_core
 
 function renderModes() {
-  const label = editStep.kind === "add_stock" ? "Select wells" : "Draw edges";
+  const labels = editStep.kind === "add_stock" ? ["Select wells", "Assign"] : ["Draw edges", "Assign volumes"];
   document.getElementById("modes").innerHTML =
-    `<button class="small ${editMode === "select" ? "on" : ""}" data-mode="select">${label}</button>
-     <button class="small ${editMode === "volumes" ? "on" : ""}" data-mode="volumes">Assign</button>`;
+    `<button class="small ${editMode === "select" ? "on" : ""}" data-mode="select">${labels[0]}</button>
+     <button class="small ${editMode === "volumes" ? "on" : ""}" data-mode="volumes">${labels[1]}</button>`;
 }
 
 // methods and their hyperparameter specs come from the admin registry, never hardcoded
@@ -409,27 +421,88 @@ function renderHow() {
   });
 }
 
+// module methods and their params (hardcoded for now - MODULE_METHODS is not in
+// the admin registry the way LIQUID_METHODS is).
+const MODULE_METHOD_SPECS = {
+  heater_shaker_shake: [{ name: "rpm", placeholder: "1000" }, { name: "minutes", placeholder: "10" }],
+  heater_shaker_latch: [{ name: "action", options: ["open", "close"] }],
+};
+function renderModuleOp() {
+  const h = editStep.how;
+  if (!h.method) h.method = "heater_shaker_shake";
+  if (!h.params) h.params = {};
+  const methodOpts = Object.keys(MODULE_METHOD_SPECS).map(m => `<option value="${m}" ${m === h.method ? "selected" : ""}>${m}</option>`).join("");
+  const spec = MODULE_METHOD_SPECS[h.method] || [];
+  const field = pp => {
+    const cur = h.params[pp.name];
+    if (pp.options) return `<label>${pp.name} <select data-mp="${pp.name}">${pp.options.map(o => `<option value="${o}" ${cur === o ? "selected" : ""}>${o}</option>`).join("")}</select></label>`;
+    return `<label>${pp.name} <input type="number" data-mp="${pp.name}" value="${cur ?? ""}" placeholder="${pp.placeholder || ""}" style="width:80px"></label>`;
+  };
+  document.getElementById("phase-module").innerHTML = `
+    <div class="fill-tools">
+      <label>Method <select id="mod-method">${methodOpts}</select></label>
+      <span id="mod-params" style="margin-left:8px">${spec.map(field).join("")}</span>
+    </div>
+    <p class="muted" style="font-size:11px">Runs on the module chosen above. A shake closes the latch, shakes for the set time, then stops and opens the latch.</p>`;
+  document.getElementById("mod-method").onchange = e => { editStep.how.method = e.target.value; editStep.how.params = {}; renderModuleOp(); };
+  document.querySelectorAll("#mod-params [data-mp]").forEach(inp => {
+    const handler = e => {
+      const key = e.target.dataset.mp;
+      if (inp.tagName === "SELECT") { editStep.how.params[key] = e.target.value; return; }
+      const v = e.target.value;
+      if (v === "") { delete editStep.how.params[key]; return; }
+      editStep.how.params[key] = parseFloat(v);
+    };
+    inp.oninput = handler; inp.onchange = handler;
+  });
+}
+
 function renderEditor() {
-  const isAdd = editStep.kind === "add_stock";
+  const kind = editStep.kind;
+  const isAdd = kind === "add_stock", isMove = kind === "move_core", isModule = kind === "module_op";
   document.getElementById("hdr-add").style.display = isAdd ? "" : "none";
-  document.getElementById("hdr-move").style.display = isAdd ? "none" : "";
-  document.getElementById("edit-pill").outerHTML =
-    `<span id="edit-pill" class="pill ${isAdd ? "add" : "move"}">${isAdd ? "add stock" : "move core"}</span>`;
-  document.getElementById("modes").style.display = isAdd ? "" : "none";
+  document.getElementById("hdr-move").style.display = isMove ? "" : "none";
+  document.getElementById("hdr-module").style.display = isModule ? "" : "none";
+  const pc = isAdd ? "add" : isMove ? "move" : "module";
+  const pt = isAdd ? "add stock" : isMove ? "move core" : "module op";
+  document.getElementById("edit-pill").outerHTML = `<span id="edit-pill" class="pill ${pc}">${pt}</span>`;
+
+  const hide = id => { document.getElementById(id).style.display = "none"; };
+  ["edit-hint", "how-section", "modes", "phase-add", "phase-vol", "phase-move", "phase-module"].forEach(hide);
+
+  if (isModule) {
+    document.getElementById("phase-module").style.display = "";
+    renderModuleOp();
+    return;
+  }
+
+  // nothing else appears until the plate(s) are chosen
+  const ready = isAdd ? !!editStep.dest_plate : (!!editStep.source_plate && !!editStep.receiver_plate);
+  if (!ready) {
+    const hint = document.getElementById("edit-hint");
+    hint.textContent = isAdd ? "Pick a destination plate to continue." : "Pick a source and a receiver plate to continue.";
+    hint.style.display = "";
+    return;
+  }
+
+  // pipette + method first: it dictates single vs multichannel behaviour
+  document.getElementById("how-section").style.display = "";
+  renderHow();
+
+  // select / assign for both add_stock and move_core
+  document.getElementById("modes").style.display = "";
+  renderModes();
+  const showSel = editMode === "select";
   if (isAdd) {
-    renderModes();
-    const showSel = editMode === "select";
     document.getElementById("phase-add").style.display = showSel ? "" : "none";
     document.getElementById("phase-vol").style.display = showSel ? "none" : "";
-    document.getElementById("phase-move").style.display = "none";
     if (showSel) renderWellGrid(); else renderAssign();
   } else {
-    document.getElementById("phase-add").style.display = "none";
-    document.getElementById("phase-vol").style.display = "none";
     document.getElementById("phase-move").style.display = "";
+    document.getElementById("move-select").style.display = showSel ? "" : "none";
+    document.getElementById("move-vol").style.display = showSel ? "none" : "";
     renderMove();
   }
-  renderHow();
 }
 
 // ---------- add_stock selection ----------
@@ -524,7 +597,7 @@ function renderMove() {
     `<tr>
        <td><span class="dot" style="background:${edgeColor(i)}"></span></td>
        <td>${e.src} &rarr; ${e.dst}${ch > 1 ? " (col)" : ""}</td>
-       <td><input type="number" class="mc-vol" data-ei="${i}" value="${e.volume ?? ""}" placeholder="µL" style="width:64px"></td>
+       <td>${editMode === "volumes" ? `<input type="number" class="mc-vol" data-ei="${i}" value="${e.volume ?? ""}" placeholder="µL" style="width:64px">` : `<span class="muted">${e.volume ?? "&mdash;"}</span>`}</td>
        <td><button class="small danger" data-edge="${i}">remove</button></td>
      </tr>`
   ).join("") || `<tr><td colspan="4" class="muted">No transfers yet.</td></tr>`;
@@ -600,12 +673,12 @@ function parseContentDict(text) {
   return obj;
 }
 
-function applyContentJSON() {
-  const note = document.getElementById("as-json-note");
+function applyContentJSON(text) {
+  const note = document.getElementById("as-note");
   const setNote = (t, bad) => { note.textContent = t; note.style.color = bad ? "#a32d2d" : "#0f6e56"; };
   if (!editStep || !editGrid) { setNote("Pick a destination plate first.", true); return; }
   let obj;
-  try { obj = parseContentDict(document.getElementById("as-json").value); }
+  try { obj = parseContentDict(text); }
   catch (e) { setNote(e.message, true); return; }
 
   const valid = new Set(Object.values(editGrid.byRC));
@@ -637,7 +710,7 @@ function applyContentJSON() {
   editStep.order = editStep.order || { axis: "row", reverse: false, custom: false };
   editStep.order.custom = true;
   setNote(`set ${wells.length} well(s)` + (unknownSub ? `, ${unknownSub} unknown substance name(s)` : ""), unknownSub > 0);
-  renderWellGrid();
+  renderEditor();
 }
 
 // ---------- editor open ----------
@@ -652,12 +725,16 @@ async function openEditor(step) {
     editSel = new Set(step.wells);
     if (!step.order) step.order = { axis: "row", reverse: false, custom: false };
     if (step.dest_plate) { const p = corePlates.find(p => p.name === step.dest_plate); if (p) editGrid = await gridFor(p.type); }
-  } else {
+  } else if (step.kind === "move_core") {
     const opts = sel => `<option value="">— pick —</option>` + corePlates.map(p => `<option value="${p.name}" ${p.name === sel ? "selected" : ""}>${p.name}</option>`).join("");
     document.getElementById("edit-src").innerHTML = opts(step.source_plate);
     document.getElementById("edit-dst").innerHTML = opts(step.receiver_plate);
     if (step.source_plate) { const p = corePlates.find(p => p.name === step.source_plate); if (p) srcGrid = await gridFor(p.type); }
     if (step.receiver_plate) { const p = corePlates.find(p => p.name === step.receiver_plate); if (p) dstGrid = await gridFor(p.type); }
+  } else if (step.kind === "module_op") {
+    const mods = Object.keys((cfg && cfg.modules) || {});
+    document.getElementById("edit-module").innerHTML =
+      `<option value="">— pick —</option>` + mods.map(n => `<option value="${n}" ${n === step.module ? "selected" : ""}>${n}</option>`).join("");
   }
   renderEditor();
   document.getElementById("editor").style.display = "";
@@ -686,6 +763,7 @@ document.getElementById("edit-dst").onchange = async e => {
   if (p) { try { dstGrid = await gridFor(p.type); } catch (err) { msg(err.message, false); } }
   renderEditor();
 };
+document.getElementById("edit-module").onchange = e => { if (editStep) editStep.module = e.target.value; };
 
 // mode toggle
 document.getElementById("modes").addEventListener("click", e => { if (e.target.dataset.mode) { editMode = e.target.dataset.mode; renderEditor(); } });
@@ -854,12 +932,25 @@ document.getElementById("as-clear").onclick = () => {
   editStep.wells.forEach(w => { if (editStep.assignments[w]) delete editStep.assignments[w].volume; });
   renderAssign();
 };
-document.getElementById("as-paste-btn").onclick = () => applyAssignPaste(document.getElementById("as-paste").value);
-document.getElementById("as-json-btn").onclick = applyContentJSON;
+document.getElementById("as-paste-btn").onclick = () => {
+  const text = document.getElementById("as-paste").value;
+  if (document.getElementById("paste-json").checked) applyContentJSON(text);
+  else applyAssignPaste(text);
+};
+function updatePasteMode() {
+  const json = document.getElementById("paste-json").checked;
+  document.getElementById("as-paste").placeholder = json
+    ? '{ "A1": {"substance": "DMSO", "volume": 5000} }'
+    : "water\t100\nAETC\t50";
+}
+document.getElementById("paste-excel").onchange = updatePasteMode;
+document.getElementById("paste-json").onchange = updatePasteMode;
 
-document.getElementById("edit-done").onclick = () => {
+const finishEditing = () => {
   document.getElementById("editor").style.display = "none"; editStep = null; renderSteps();
 };
+document.getElementById("edit-done").onclick = finishEditing;
+document.getElementById("edit-done-top").onclick = finishEditing;
 
 // ---------- step list ----------
 document.getElementById("btn-new").onclick = () => {

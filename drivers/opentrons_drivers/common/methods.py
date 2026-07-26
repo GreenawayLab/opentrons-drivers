@@ -1,5 +1,5 @@
 import time
-from typing import Callable
+from typing import Callable, Any
 from opentrons.protocol_api.labware import Well
 from opentrons.protocol_api.instrument_context import InstrumentContext
 import opentrons_drivers.common.helpers as help
@@ -120,3 +120,58 @@ def viscous_liquid_transfer(pipette: InstrumentContext,
         pipette.touch_tip(radius=1, speed=400, v_offset=-5)
         pipette.dispense(a, location=fr.top(z=-1), rate=rate)
         pipette.blow_out(location=fr.top(z=1))
+
+
+#---------- Module methods ----------
+
+MODULE_METHODS: dict[str, Callable[..., object]] = {}
+register_module_method = help.make_registry_decorator(MODULE_METHODS)
+
+"""
+    All module methods must have the same base signature:
+    module: Any (the loaded module context), protocol: Any (the ProtocolContext)
+
+    module is the loaded module object (from StaticCtx["modules"]); protocol is
+    needed for protocol.delay (protocol.pause is forbidden - it deadlocks the
+    agent thread). Anything else is passed as keyword arguments (rpm, minutes,
+    etc.) drawn from the step's method params.
+
+    Types are Any because the module-context union is opentrons-version-specific;
+    this is a hardware wire boundary.
+"""
+
+@register_module_method("heater_shaker_shake")
+def heater_shaker_shake(module: Any, protocol: Any, rpm: float, minutes: float) -> None:
+    """
+    Latch, shake at a set speed for a set time, then stop and release.
+
+    The heater-shaker will only shake with the labware latch closed (a hardware
+    safety), so the latch is closed first and opened again at the end so the
+    plate can be accessed or removed. protocol.delay holds for the shake duration
+    (protocol.pause is never used - it deadlocks the agent's protocol thread).
+
+    :param module: The loaded heater-shaker module context.
+    :param protocol: The active ProtocolContext (for delay).
+    :param rpm: Target shake speed in RPM.
+    :param minutes: How long to shake.
+    """
+    module.close_labware_latch()
+    module.set_and_wait_for_shake_speed(rpm)
+    protocol.delay(minutes=minutes)
+    module.deactivate_shaker()
+    module.open_labware_latch()
+
+
+@register_module_method("heater_shaker_latch")
+def heater_shaker_latch(module: Any, protocol: Any, action: str = "open") -> None:
+    """
+    Open or close the heater-shaker labware latch.
+
+    :param module: The loaded heater-shaker module context.
+    :param protocol: The active ProtocolContext (unused, kept for a uniform signature).
+    :param action: ``"open"`` (default) or ``"close"``.
+    """
+    if action == "close":
+        module.close_labware_latch()
+    else:
+        module.open_labware_latch()
