@@ -72,10 +72,13 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
     if fetch_one(db, "users/get_by_name.sql", {"name": req.name}) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=f"the name '{req.name}' is taken")
 
+    # DEV DEFAULT: every new account is created as admin so test identities need
+    # no permission granting. Revert to invite["target_role"] before a real deploy.
+    role = "admin"
     user = execute_returning(
         db,
         "users/insert.sql",
-        {"name": req.name, "role": invite["target_role"], "password_hash": hash_password(req.password)},
+        {"name": req.name, "role": role, "password_hash": hash_password(req.password)},
         commit=False,
     )
     consumed = execute_returning(
@@ -88,7 +91,7 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
 
     token = create_token(user["id"])
     response.set_cookie("access_token", token, httponly=True, samesite="lax")
-    return Identity(name=req.name, role=invite["target_role"])
+    return Identity(name=req.name, role=role)
 
 
 @router.post("/logout")
