@@ -82,6 +82,7 @@
   #msg .error, #run-error { color: #a32d2d; }
   button.danger { color: #a32d2d; }
   .proc { color: #b7791f; }
+  #ready-status.ok { color: #0f6e56; font-weight: 600; }
   #resume-banner { background: #fff6e5; border: 1px solid #e5c07b; border-radius: 6px;
                    padding: 10px 12px; margin: 12px 0; }
   #resume-banner .run-line { margin: 4px 0; }
@@ -170,7 +171,7 @@ async function reattach(runId) {
   if (d.status === "booking") { show("ready"); setBooking(true); waitForReady(); }
   else if (d.status === "ready") {
     show("ready"); setBooking(false);
-    document.getElementById("ready-status").textContent = "Agent ready.";
+    readyStatus("Agent ready.", true);
   } else { show("running"); poll(); }
 }
 
@@ -193,11 +194,18 @@ document.getElementById("btn-submit").onclick = async () => {
 
 // Booking is slow (agent bootstrap over SSH), so the open call returns straight
 // away and we poll until the agent is up.
+// The ok class carries the green; always set it through here so no path leaves
+// a stale green on an amber message.
+function readyStatus(t, ok) {
+  const el = document.getElementById("ready-status");
+  el.textContent = t;
+  el.classList.toggle("ok", !!ok);
+}
 function setBooking(busy) {
   for (const id of ["btn-calibrate", "btn-run-now", "btn-cancel"]) {
     document.getElementById(id).disabled = busy;
   }
-  document.getElementById("ready-status").textContent = busy ? "Booking robot and starting agent…" : "";
+  readyStatus(busy ? "Booking robot and starting agent…" : "", false);
 }
 async function waitForReady() {
   while (run) {
@@ -206,7 +214,7 @@ async function waitForReady() {
     try { s = await api("GET", `/user/runs/${run.run_id}`); } catch (_) { continue; }
     if (s.status === "ready") {
       setBooking(false);
-      document.getElementById("ready-status").textContent = "Agent ready.";
+      readyStatus("Agent ready.", true);
       return;
     }
     if (s.status === "failed") {
