@@ -75,6 +75,7 @@ class PlateInfo(TypedDict, total=False):
     offset: Dict[str, float]         # x/y/z adjustments
     content: Dict[str, PlateContent] # optional per-well fill info before the expt
     on_module: str                   # if set, plate loads onto this module, not a slot
+    mount: str                       # for a tiprack: which pipette mount it serves
 
 # ---------- Module configuration ----------
 class ModuleInfo(TypedDict, total=False):

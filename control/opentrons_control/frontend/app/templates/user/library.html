@@ -16,7 +16,7 @@
     <p class="muted" style="font-size:12px">Kind is read from the definition's displayCategory, so a custom
     tiprack is recognised without anyone declaring it.</p>
     <table id="lw-custom">
-      <thead><tr><th>Name</th><th>Kind</th><th>Wells</th></tr></thead>
+      <thead><tr><th>Name</th><th>Kind</th><th>Wells</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -58,6 +58,7 @@
 
 <script>
 const API = "/user/deck";
+const ROLE = "{{ user.role }}";
 
 function msg(text, ok) {
   document.getElementById("msg").innerHTML = text ? `<p class="${ok ? "ok" : "error"}">${text}</p>` : "";
@@ -80,8 +81,8 @@ async function loadLibrary() {
     api("GET", "/labware"), api("GET", "/standard-units"),
   ]);
   document.querySelector("#lw-custom tbody").innerHTML = labware.map(l =>
-    `<tr><td>${l.name}</td><td>${l.kind || "plate"}</td><td>${l.well_count}</td></tr>`).join("")
-    || `<tr><td colspan="3" class="muted">None.</td></tr>`;
+    `<tr><td>${l.name}</td><td>${l.kind || "plate"}</td><td>${l.well_count}</td><td>${ROLE === "admin" ? `<button class="small danger" data-del="${l.name}">delete</button>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">None.</td></tr>`;
   const rows = cat => units.filter(u => u.category === cat).map(u =>
     `<tr><td>${u.name}</td><td class="muted">${u.created_by_name || ""}</td></tr>`).join("");
   document.querySelector("#lw-modules tbody").innerHTML =
@@ -113,6 +114,13 @@ document.getElementById("btn-upload").onclick = uploadLabware;
 document.getElementById("btn-add-module").onclick = () => addUnit("standard");
 document.getElementById("btn-add-pipette").onclick = () => addUnit("pipette");
 
+document.querySelector("#lw-custom tbody").addEventListener("click", async e => {
+  const name = e.target.dataset.del;
+  if (!name) return;
+  if (!confirm(`Delete labware "${name}"? This cannot be undone.`)) return;
+  try { await api("DELETE", "/labware/" + encodeURIComponent(name)); msg(`Deleted ${name}.`, true); await loadLibrary(); }
+  catch (err) { msg(err.message, false); }
+});
 loadLibrary().catch(e => msg(e.message, false));
 </script>
 {% endblock %}

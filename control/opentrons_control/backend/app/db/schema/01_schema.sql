@@ -175,7 +175,7 @@ CREATE TABLE user_permissions (
 -- admin decision after reviewing the code, not an auto-discovered list. params
 -- is the hyperparameter spec the admin publishes: a list of
 -- {name, units?, min?, max?} the frontend renders as fillable fields.
--- basic_liquid_transfer has no hyperparameters and is the universal default,
+-- basic_liquid_transfer has one hyperparameter and is the universal default,
 -- seeded here so it is always available regardless of admin action.
 CREATE TABLE methods (
     name        TEXT        PRIMARY KEY,
@@ -184,7 +184,8 @@ CREATE TABLE methods (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO methods (name, params) VALUES ('basic_liquid_transfer', '[]'::jsonb);
+INSERT INTO methods (name, params)
+VALUES ('basic_liquid_transfer', '[{"name": "airgap", "dtype": "float", "units": "µL", "min": 0}]'::jsonb);
 
 
 -- ============================== action_plans ==============================

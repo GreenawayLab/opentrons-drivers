@@ -212,6 +212,7 @@ function plateCard(p, kind, idx) {
       <label>labware<input value="${p.type}" list="labware-${kind}" data-f="${kind}:${idx}:type" placeholder="pick a labware first"></label>
       <label>name<input value="${p.name}" data-f="${kind}:${idx}:name" ${isTiprack ? "readonly title='tipracks are named automatically so the robot attaches them'" : ""} placeholder="${isCore ? "core1" : "stocks"}"></label>
       <label>slot<input value="${p.place}" data-f="${kind}:${idx}:place" placeholder="5"></label>
+      ${isTiprack ? `<label>mount<select data-f="${kind}:${idx}:mount"><option value="">&mdash; pick &mdash;</option><option value="left" ${p.mount === "left" ? "selected" : ""}>left</option><option value="right" ${p.mount === "right" ? "selected" : ""}>right</option></select></label>` : ""}
       ${isCore ? onModuleField(p, kind, idx) : ""}
       ${maxField}
       <button class="small danger" data-delp="${kind}:${idx}">remove plate</button>
@@ -373,6 +374,7 @@ function platesToConfig(list, isCore) {
       offset: { x: num(p.offset.x), y: num(p.offset.y), z: num(p.offset.z) }, content: {} };
     if (isCore && p.max_volume !== "" && p.max_volume != null) entry.max_volume = num(p.max_volume);
     if (p.on_module) entry.on_module = p.on_module;
+    if (p.mount) entry.mount = p.mount;
     for (const c of p.content) if (c.well) entry.content[c.well] = { substance: c.substance, volume: num(c.volume) };
     out[p.name] = entry;
   }
@@ -461,7 +463,7 @@ function loadIntoForm(cfg) {
   document.getElementById("pip-left").value = cfg.pipettes.left ? cfg.pipettes.left.model : "";
   document.getElementById("pip-right").value = cfg.pipettes.right ? cfg.pipettes.right.model : "";
   const toRows = obj => Object.entries(obj).map(([name, p]) => ({
-    name, type: p.type, place: p.place, max_volume: p.max_volume ?? "", on_module: p.on_module ?? "",
+    name, type: p.type, place: p.place, max_volume: p.max_volume ?? "", on_module: p.on_module ?? "", mount: p.mount ?? "",
     offset: { x: (p.offset || {}).x ?? 0, y: (p.offset || {}).y ?? 0, z: (p.offset || {}).z ?? 0 },
     content: Object.entries(p.content || {}).map(([well, c]) => ({ well, substance: c.substance, volume: c.volume })),
     wells: [], capacity: null,

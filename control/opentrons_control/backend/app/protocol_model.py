@@ -54,6 +54,7 @@ class PlateInfo(BaseModel):
     offset: dict[str, float] = Field(default_factory=dict)
     content: dict[str, PlateContent] = Field(default_factory=dict)
     on_module: str | None = None
+    mount: str | None = None
 
     @model_validator(mode="after")
     def _content_within_max(self) -> "PlateInfo":

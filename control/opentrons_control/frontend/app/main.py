@@ -643,6 +643,14 @@ async def deck_save_labware(request: Request) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.delete("/user/deck/labware/{name}")
+async def deck_delete_labware(request: Request, name: str) -> Response:
+    # reuses the admin-only delete_labware in the admin router (/api/labware/{name}),
+    # which refuses while a saved config still references the labware.
+    r = await call_backend(request, "DELETE", f"/api/labware/{name}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/user/deck/standard-units")
 async def deck_list_units(request: Request) -> Response:
     r = await call_backend(request, "GET", "/api/user/deck/standard-units")

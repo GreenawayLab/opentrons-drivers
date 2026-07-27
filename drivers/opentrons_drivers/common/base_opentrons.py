@@ -3,7 +3,7 @@ from collections import defaultdict
 import json
 from opentrons.protocol_api.instrument_context import InstrumentContext
 from opentrons.protocol_api.labware import Labware
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 from opentrons_drivers.common.custom_types import StaticCtx, JSONType
 from opentrons_drivers.common.actions import ACTION_REGISTRY
 from opentrons_drivers.common.custom_types import StockWell, CoreWell, BaseConfig, PlateInfo, ModuleInfo
@@ -40,6 +40,9 @@ class Opentrons:
         self.core_plates: Dict[str, Labware] = {}
         self.stock_plates: Dict[str, Labware] = {}
         self.support_plates: List[Labware] = []  # tipracks and any support labware
+        # each loaded tiprack with its declared mount ("left"/"right"), or None if
+        # undeclared; used to hand each pipette only the racks it may pick from.
+        self.tiprack_specs: List[tuple[Labware, Optional[str]]] = []
 
         # Module containers: loaded module contexts and their adapters, by name.
         # Typed Any because the module-context union is opentrons-version-specific.
@@ -196,6 +199,7 @@ class Opentrons:
                     z=offset.get("z", 0.0),
                 )
                 self.support_plates.append(plate)
+                self.tiprack_specs.append((plate, plate_info.get("mount")))
                 continue
 
             # Core / stock plates always use custom JSON
@@ -228,21 +232,43 @@ class Opentrons:
     # Internal: Pipettes
     # ----------------------------------------------------------------------
 
+    def _racks_for(self, unit: InstrumentContext, mount: str) -> List[Labware]:
+        """Return the tipracks a pipette on ``mount`` may pick tips from.
+
+        The API does not match tipracks to pipettes; whatever list you attach is
+        the pipette's tip source, and an automatic pickup just takes the next tip
+        from the first rack. A mixed list therefore lets a p20 grab a p300 tip.
+
+        A rack whose config declares a ``mount`` is bound to that mount alone. A
+        rack that declares none falls back to fit-by-volume: it attaches only if
+        its tip capacity does not exceed the pipette's max volume, so a 300 µL
+        rack never lands on a 20 µL pipette. Declared mount wins; the heuristic is
+        only for racks authored before the field existed.
+        """
+        racks: List[Labware] = []
+        for rack, declared in self.tiprack_specs:
+            if declared is not None:
+                if declared == mount:
+                    racks.append(rack)
+                continue
+            tip_volume = rack.wells()[0].max_volume
+            if tip_volume <= unit.max_volume:
+                racks.append(rack)
+        return racks
+
     def _init_pipettes(self) -> None:
         """
-        Load pipettes as defined in BaseConfig and attach loaded tipracks.
+        Load pipettes as defined in BaseConfig and attach each pipette only the
+        tipracks it may use (by declared mount, else fit-by-volume).
         """
         pip_cfg = self.base_config.get("pipettes", {})
         for mount, info in pip_cfg.items():
             model = info["model"]
-            unit = self.protocol.load_instrument(
-                model,
-                mount=mount,
-                tip_racks=self.support_plates if self.support_plates else None,
-            )
+            unit = self.protocol.load_instrument(model, mount=mount, tip_racks=None)
             unit.swelled = None  # required for compatibility with actions
             # TODO: check what will work after update instead of old
             # unit.max_volume = unit.max_volume * 0.8 # type: ignore[attr-defined]
+            unit.tip_racks = self._racks_for(unit, mount)
             self.pipettes[mount] = unit
 
     # ----------------------------------------------------------------------
