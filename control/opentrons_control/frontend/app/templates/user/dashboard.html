@@ -24,6 +24,8 @@
 
     <div id="cal" style="display:none;margin-top:14px">
 
+      <label>Pipette <select id="cal-mount"></select></label>
+
       <div id="cal-tiprack" class="cal-phase">
         <h3>1 · Tiprack pickup</h3>
         <p class="muted" style="font-size:12px">Try picking up a tip. If it misaligns, adjust the rack offset and retry until pickup is clean.</p>
@@ -118,7 +120,8 @@ function calResult(id, label, r) {
   note(id, ok ? `${label}: ok` : `${label} FAILED: ${(r.error || "no detail").split("\n").filter(Boolean).pop()}`, ok);
   if (!ok && r.error) console.error(label + " failed on agent:\n" + r.error);
 }
-async function calibrate(action, payload) { return api("POST", `/user/runs/${run.run_id}/calibrate`, { action, payload }); }
+function calMount() { return document.getElementById("cal-mount").value || "left"; }
+async function calibrate(action, payload) { return api("POST", `/user/runs/${run.run_id}/calibrate`, { action, payload: { ...payload, pipette_mount: calMount() } }); }
 
 async function loadRunOptions() {
   const [robots, plans] = await Promise.all([api("GET", "/user/robots"), api("GET", "/user/plans/mine")]);
@@ -141,6 +144,9 @@ function applyRunDetail(d) {
   document.getElementById("tr-slot").innerHTML = (d.tipracks || [])
     .map(r => `<option value="${r.slot}">${r.name} (slot ${r.slot})</option>`).join("")
     || `<option value="">no tipracks in this config</option>`;
+  document.getElementById("cal-mount").innerHTML = (d.pipettes || [])
+    .map(p => `<option value="${p.mount}">${p.mount} — ${p.model}${p.channels > 1 ? ` (${p.channels}-ch)` : ""}</option>`).join("")
+    || `<option value="">no pipettes</option>`;
 }
 
 // ---- reattach: the process still owns the run, only the page forgot it ----

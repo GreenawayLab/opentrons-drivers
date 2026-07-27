@@ -444,6 +444,10 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             for n, info in all_plates.items()
             if n.startswith("tiprack_")
         ]
+        pipettes = [
+            {"mount": m, "model": info.model, "channels": info.channels}
+            for m, info in config.pipettes.items()
+        ]
 
         run_id = new_run_id()
         the_run = Run(
@@ -455,6 +459,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             opened_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             plates=plates,
             tipracks=tipracks,
+            pipettes=pipettes,
             status="booking",
         )
         executor = Executor(the_run)
@@ -502,6 +507,7 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
             "commands": [describe(s) for s in ex.run.stream],
             "plates": ex.run.plates,
             "tipracks": ex.run.tipracks,
+            "pipettes": ex.run.pipettes,
         }
 
     @app.get("/runs")

@@ -108,6 +108,7 @@ class Run:
     opened_at: str = ""
     plates: list[dict[str, Any]] = field(default_factory=list)
     tipracks: list[dict[str, Any]] = field(default_factory=list)
+    pipettes: list[dict[str, Any]] = field(default_factory=list)
     cursor: int = 0
     status: str = "booking"  # booking | ready | running | paused | complete | failed | aborted | cancelled
     error: str | None = None
