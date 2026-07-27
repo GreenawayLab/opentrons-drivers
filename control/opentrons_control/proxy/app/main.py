@@ -51,7 +51,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://backend:8000").rstrip("/")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://frontend:8000").rstrip("/")
-PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "200"))
+PROXY_TIMEOUT = float(os.environ.get("PROXY_TIMEOUT", "360"))
 
 
 #: Path prefixes the proxy will forward to the frontend. Anything not matched
