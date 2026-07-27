@@ -21,6 +21,7 @@ or ``pause`` is a new payload shape, not a schema change.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -284,33 +285,29 @@ def labware_columns(definition: dict[str, Any]) -> list[list[str]]:
     return [list(col) for col in ordering]
 
 
-def resolve_column(anchor: str, channels: int, definition: dict[str, Any]) -> list[str]:
+def resolve_column(anchor: str, channels: int) -> list[str]:
     """Return the wells a pipette engages when it targets ``anchor``.
 
     Single-channel returns just the anchor. A multichannel returns the column
-    whose head (row A) is ``anchor``; that column must hold exactly ``channels``
-    wells. This mirrors the agent's on-robot resolution — same row-A anchor rule,
-    same exact-length rule — so the checker replays the identical stream the agent
-    executes rather than approximating it.
+    whose head (row A) is ``anchor`` — derived directly from the label by
+    incrementing the row letter, since a column of ``A1`` is always
+    ``A1, B1, ... `` for the first ``channels`` rows. This matches the wells the
+    robot's ``columns_by_name`` yields, and needs no labware definition, so the
+    checker stays geometry-free. The "is this plate's column actually N wells"
+    guard lives at config-save (the compatibility warning) and on the robot
+    (``columns_by_name`` raises), so it is not repeated here.
 
-    :param anchor: The well targeted (a column head for a multichannel).
+    :param anchor: The well targeted (a row-A column head for a multichannel).
     :param channels: The pipette channel count.
-    :param definition: The receiving/aspirating plate's labware definition.
     :returns: The engaged wells, top to bottom.
-    :raises ValueError: if a multichannel anchor is not a column head, or its
-        column does not hold exactly ``channels`` wells.
+    :raises ValueError: if a multichannel anchor is not a single-letter row-A head.
     """
     if channels == 1:
         return [anchor]
-    for column in labware_columns(definition):
-        if column[0] == anchor:
-            if len(column) != channels:
-                raise ValueError(
-                    f"a {channels}-channel pipette needs a column of {channels} wells, "
-                    f"but the column headed by {anchor} has {len(column)}"
-                )
-            return column
-    raise ValueError(
-        f"a {channels}-channel pipette must target a column head (row A); "
-        f"'{anchor}' heads no column of this labware"
-    )
+    m = re.fullmatch(r"([A-Za-z])(\d+)", anchor)
+    if m is None or m.group(1) != "A":
+        raise ValueError(
+            f"a {channels}-channel pipette must target a row-A column head; got '{anchor}'"
+        )
+    col = m.group(2)
+    return [chr(ord("A") + i) + col for i in range(channels)]

@@ -91,38 +91,12 @@ def _ordered_wells(wells: list[str], order: dict[str, Any] | None) -> list[str]:
     return sorted(wells, key=key, reverse=reverse)
 
 
-def _column_for(
-    plate: str,
-    anchor: str,
-    channels: int,
-    labware_defs: dict[str, dict[str, Any]],
-) -> list[str]:
-    """Resolve the wells one motion touches on ``plate`` when targeting ``anchor``.
-
-    Single-channel is just the anchor and needs no geometry. A multichannel needs
-    the plate's labware definition to read its column membership; a plate without
-    one (e.g. a built-in load name with no stored definition) cannot be resolved.
-
-    :raises ValueError: if geometry is needed but unavailable, or the anchor is not
-        a valid column head for the channel count.
-    """
-    if channels == 1:
-        return [anchor]
-    definition = labware_defs.get(plate)
-    if definition is None:
-        raise ValueError(
-            f"no labware geometry for plate '{plate}', needed to resolve a "
-            f"{channels}-channel column"
-        )
-    return resolve_column(anchor, channels, definition)
-
-
 def plan_to_protocol(
     config: BaseConfig,
     steps: list[dict[str, Any]],
     name: str = "check",
     drivers_version: str = "check",
-    labware_defs: dict[str, dict[str, Any]] | None = None,
+    labware_defs: dict[str, dict[str, Any]] | None = None,  # deprecated: ignored, columns derive from the well label
 ) -> tuple[ManualProtocol, list[str], list[str]]:
     """Expand plan steps into a transfer_execution protocol plus incomplete notes.
 
@@ -136,7 +110,6 @@ def plan_to_protocol(
         generation errors (a fill_to below the well's current volume, an
         unresolvable column, or fill_to under a multichannel pipette).
     """
-    labware_defs = labware_defs or {}
     core = _seed_core(config)
     out: list[Step] = []
     incomplete: list[str] = []
@@ -224,7 +197,7 @@ def plan_to_protocol(
                     amount = float(cell.get("value") if isinstance(cell, dict) else cell)
 
                 try:
-                    recv_wells = _column_for(plate, well, channels, labware_defs)
+                    recv_wells = resolve_column(well, channels)
                 except ValueError as exc:
                     errors.append(f"step {i + 1}: {exc}")
                     continue
@@ -247,8 +220,8 @@ def plan_to_protocol(
                 amount = float(vol)
 
                 try:
-                    recv_wells = _column_for(r_plate, dst, channels, labware_defs)
-                    src_wells = _column_for(s_plate, src, channels, labware_defs)
+                    recv_wells = resolve_column(dst, channels)
+                    src_wells = resolve_column(src, channels)
                 except ValueError as exc:
                     errors.append(f"step {i + 1}: {exc}")
                     continue
