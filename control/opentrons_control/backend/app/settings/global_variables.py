@@ -33,7 +33,7 @@ AGENT_ENV = {
 #: Wall-clock budget for the agent to report ready after launch. Hardware
 #: boot typically takes 60-80 seconds; the headroom covers slow USB
 #: enumeration and pipette discovery.
-DEFAULT_READINESS_TIMEOUT = 180.0
+DEFAULT_READINESS_TIMEOUT = 360.0
 
 # Config operational location
 
