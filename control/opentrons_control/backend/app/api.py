@@ -41,7 +41,11 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
-from opentrons_control.backend.app.launcher import launch_session
+from opentrons_control.backend.app.launcher import (
+    acquire_session,
+    bootstrap_and_finalize,
+    launch_session,
+)
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.robot_sessions import (
     Robot,
@@ -238,29 +242,42 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     @app.post(
         "/internal/sessions",
         response_model=CreateSessionResponse,
-        status_code=201,
+        status_code=202,
     )
     async def create_session(
         req: CreateSessionRequest,
     ) -> CreateSessionResponse:
+        """Acquire the robot and return at once; the bootstrap runs detached.
+
+        Acquiring the lock is fast, and its failures (unknown robot, busy) answer
+        synchronously. The bootstrap - file staging, agent boot, readiness wait -
+        takes tens of seconds, far past any sane proxy read timeout, so it runs as
+        a background task and the caller polls GET /sessions/{token}/details until
+        the status is ``active`` or ``failed``. This mirrors the manual run path,
+        which detaches for the same reason. The returned session is ``starting``.
+        """
         try:
-            session = await launch_session(
+            session, robot = await acquire_session(
                 registry,
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
-                files=req.files,
                 client_id=req.client_id,
             )
         except ct.UnknownRobot:
             raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
         except ct.RobotBusy as e:
             raise HTTPException(status_code=409, detail=str(e))
-        except ct.FileFormatError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except ct.BootstrapFailed as e:
-            raise HTTPException(status_code=502, detail=str(e))
 
+        asyncio.create_task(
+            bootstrap_and_finalize(
+                registry,
+                session,
+                robot,
+                protocol_name=req.protocol_name,
+                files=req.files,
+            )
+        )
         return CreateSessionResponse(
             token=session.token,
             robot_id=session.robot_id,

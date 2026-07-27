@@ -1149,7 +1149,8 @@ async function loadPlansMine() {
     const desc = p.description ? escHtml(p.description) : `<span class="muted">—</span>`;
     return `<tr><td>${p.name}</td><td>v${p.major}.${p.minor}.${p.patch}</td><td>${desc}</td><td>${heritage}</td>
       <td><button class="small" data-editplan="${p.id}">edit</button>
-          <button class="small" data-planversions="${p.id}">versions</button></td></tr>`;
+          <button class="small" data-planversions="${p.id}">versions</button>
+          <button class="small danger" data-delplanfam="${p.id}:${p.name}">delete all</button></td></tr>`;
   }).join("") || `<tr><td colspan="5" class="muted">None yet. Use New plan.</td></tr>`;
 }
 async function loadPlansOthers() {
@@ -1206,6 +1207,12 @@ document.getElementById("plan-list-view").addEventListener("click", async e => {
     else if (t.dataset.delplanver) {
       if (!confirm("Delete this plan version?")) return;
       await api("DELETE", "/user/plans/" + t.dataset.delplanver);
+      document.getElementById("plans-versions-panel").innerHTML = ""; await loadPlansMine();
+    }
+    else if (t.dataset.delplanfam) {
+      const parts = t.dataset.delplanfam.split(":"); const id = parts.shift(); const name = parts.join(":");
+      if (!confirm(`Delete ALL versions of plan "${name}"? This cannot be undone.`)) return;
+      await api("DELETE", "/user/plans/" + id + "/family");
       document.getElementById("plans-versions-panel").innerHTML = ""; await loadPlansMine();
     }
   } catch (err) { msg(err.message, false); }

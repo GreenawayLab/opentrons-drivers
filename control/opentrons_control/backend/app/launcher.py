@@ -33,6 +33,7 @@ from typing import AsyncIterator, Mapping, Optional
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.robot_sessions import (
+    Robot,
     Session,
     SessionRegistry,
 )
@@ -139,6 +140,40 @@ async def launch_session(
         Any failure after the session was acquired. The session is left
         cleaned up before the exception is raised.
     """
+    session, robot = await acquire_session(
+        registry,
+        robot_id=robot_id,
+        protocol_name=protocol_name,
+        mode=mode,
+        client_id=client_id,
+    )
+    try:
+        await _run_bootstrap(robot, session, protocol_name, files, readiness_timeout)
+    except (SSHError, ct.OTClientError, OSError) as e:
+        registry.mark_failed(session.token, message=str(e))
+        registry.release(session.token)
+        raise ct.BootstrapFailed(str(e)) from e
+
+    return registry.mark_active(session.token, robot.agent_base_url)
+
+
+async def acquire_session(
+    registry: SessionRegistry,
+    *,
+    robot_id: str,
+    protocol_name: str,
+    mode: ct.Mode,
+    client_id: Optional[str] = None,
+) -> tuple[Session, Robot]:
+    """Claim the robot and create a session in ``starting`` status.
+
+    The fast half of a launch: validate the robot and acquire the lock. Both
+    fail fast (UnknownRobot / RobotBusy), so a caller can answer synchronously.
+    No robot I/O happens here; the bootstrap that follows does that.
+
+    :raises UnknownRobot: the robot id is not registered.
+    :raises RobotBusy: the robot is already held by another session.
+    """
     robot = registry.get_robot(robot_id)
     session = await registry.acquire(
         robot_id,
@@ -146,7 +181,22 @@ async def launch_session(
         mode=mode,
         client_id=client_id,
     )
+    return session, robot
 
+
+async def _run_bootstrap(
+    robot: Robot,
+    session: Session,
+    protocol_name: str,
+    files: Mapping[str, Mapping[str, ct.JSONType]],
+    readiness_timeout: float,
+) -> None:
+    """Stage files, boot the agent, and wait until it is healthy.
+
+    Raises on any failure. The caller decides whether that becomes a raised
+    ``BootstrapFailed`` (synchronous launch) or a failed session status
+    (detached launch).
+    """
     bootstrap = OTBootstrap(
         host=robot.host,
         user=robot.user,
@@ -154,24 +204,38 @@ async def launch_session(
         protocol_name=protocol_name,
         launch_id=session.launch_id,
     )
-
     loop = asyncio.get_running_loop()
+    async with _materialise_buckets(files) as staged:
+        await loop.run_in_executor(None, bootstrap.prepare_dir)
+        for subdir, paths in staged.items():
+            await loop.run_in_executor(None, bootstrap.upload_files_to, subdir, paths)
+        await loop.run_in_executor(None, bootstrap.start_agent)
+    async with OTClient(robot.agent_base_url) as client:
+        await client.wait_until_ready(timeout=readiness_timeout)
 
+
+async def bootstrap_and_finalize(
+    registry: SessionRegistry,
+    session: Session,
+    robot: Robot,
+    *,
+    protocol_name: str,
+    files: Mapping[str, Mapping[str, ct.JSONType]],
+    readiness_timeout: float = DEFAULT_READINESS_TIMEOUT,
+) -> None:
+    """Bootstrap an already-acquired session and settle its status.
+
+    Intended to run detached (``asyncio.create_task``): it never raises, so a
+    fire-and-forget caller needs no error handling. Success flips the session to
+    ``active``; any failure marks it ``failed`` with the cause and releases the
+    lock, so a poller sees a terminal status either way. Holding a request open
+    across this whole sequence would trip the proxy read timeout, which is why
+    the session path drives it detached and the client polls the status.
+    """
     try:
-        async with _materialise_buckets(files) as staged:
-            await loop.run_in_executor(None, bootstrap.prepare_dir)
-            for subdir, paths in staged.items():
-                await loop.run_in_executor(
-                    None, bootstrap.upload_files_to, subdir, paths
-                )
-            await loop.run_in_executor(None, bootstrap.start_agent)
-
-        async with OTClient(robot.agent_base_url) as client:
-            await client.wait_until_ready(timeout=readiness_timeout)
-
-    except (SSHError, ct.OTClientError, OSError) as e:
+        await _run_bootstrap(robot, session, protocol_name, files, readiness_timeout)
+    except (ct.FileFormatError, SSHError, ct.OTClientError, OSError) as e:
         registry.mark_failed(session.token, message=str(e))
         registry.release(session.token)
-        raise ct.BootstrapFailed(str(e)) from e
-
-    return registry.mark_active(session.token, robot.agent_base_url)
+        return
+    registry.mark_active(session.token, robot.agent_base_url)
