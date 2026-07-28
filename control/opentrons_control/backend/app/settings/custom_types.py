@@ -1,24 +1,4 @@
-from opentrons.protocol_api.instrument_context import InstrumentContext
-from opentrons.protocol_api.labware import Well
-from typing import TypedDict, Dict, List, Union, Callable, Optional, Any
-
-#------------ Stock and Core Well Definitions ------------
-
-# Used to store the chemical information and address the wells
-
-class StockWell(TypedDict):
-    """Basic well for stock - what and how much."""
-    position: Well
-    volume: float
-
-SubstanceHistory = Dict[str, Union[str, None, tuple[str, str, float]]]
-
-class CoreWell(TypedDict, total=False):
-    """Well for core plates - tracks substance history."""
-    position: Well
-    volume: float
-    substance: SubstanceHistory
-    max_volume: float
+from typing import TypedDict, Dict, List, Union, NotRequired, Optional, Literal
 
 #------------ JSON Type Definitions ------------
 
@@ -28,78 +8,113 @@ class CoreWell(TypedDict, total=False):
 JSONScalar = Union[str, int, float, bool, None]
 JSONType = Union[JSONScalar, List["JSONType"], Dict[str, "JSONType"]]
 
-#------------ Context Data Definition ------------
+# -------------------- Submit for ot_client --------------------
 
-#Information about the device objects that is updated after every action
+class JobSnapshotDict(TypedDict, total=False):
+    job_id: Optional[str]
+    action: Optional[str]
+    status: Optional[str]
+    error: Optional[str]
+    result: JSONType
+    submitted_at: Optional[float]
+    finished_at: Optional[float]
 
-class SystemState(TypedDict, total=False):
-    """Tracks what was the last action performed and on which plate/well."""
-    plate: str | None
-    well: str | None
-    last_action: str | None             # registry key
-    last_args: Dict[str, JSONType]      # full arg dict of the last sampler call
-    timestamp: float                    # when the last action happened
+# -------------------- Exceptions for ot_client --------------------
 
-class StaticCtx(TypedDict):
-    """Holds all setup information for action functions: amounts, pipettes, state.
+class OTClientError(RuntimeError):
+    """Base class for agent client errors."""
 
-    ``protocol`` and ``modules`` are the hardware objects module actions need:
-    ``protocol`` for ``protocol.delay`` during a shake, ``modules`` for the loaded
-    module contexts keyed by name. Both are opentrons objects, so they are typed
-    ``Any`` at this wire boundary (the module-context union is version-specific).
+
+class AgentBusy(OTClientError):
+    """Raised when the agent rejects a submission because its slot is occupied."""
+
+    def __init__(self, info: dict[str, JSONType]):
+        super().__init__(f"agent busy: {info}")
+        self.info = info
+
+
+class AgentNotReady(OTClientError):
+    """Raised when the agent returns 503 (hardware not finished initialising)."""
+
+
+class AgentBadRequest(OTClientError):
+    """Raised when the agent returns 400 for a malformed submission."""
+
+    def __init__(self, info: dict[str, JSONType]):
+        super().__init__(f"agent rejected request: {info}")
+        self.info = info
+
+
+class AgentUnreachable(OTClientError):
+    """Raised when the underlying HTTP transport fails (connection refused, timeout, etc.)."""
+
+
+class JobNotFound(OTClientError):
+    """Raised when a polled job_id is unknown to the agent."""
+
+
+# -------------------- Exceptions for launcher --------------------
+
+
+class BootstrapFailed(RuntimeError):
     """
-    core_amounts: Dict[str, Dict[str, CoreWell]]
-    stock_amounts: Dict[str, List[StockWell]]
-    pipettes: Dict[str, InstrumentContext]
-    modules: Dict[str, Any]
-    protocol: Any
-    system_state: SystemState
+    Raised when a session cannot reach the ``active`` status.
 
-#------------ Action Function Type Definition ------------
+    The session is left cleaned up (marked ``failed``, lock released)
+    before the exception propagates.
+    """
 
-ActionFn = Callable[[StaticCtx, dict[str, JSONType]], bool]
 
-#------------ Config formatting ------------
+class FileFormatError(ValueError):
+    """Raised when a file entry cannot be serialised as written."""
 
-class PlateContent(TypedDict):
-    """Auxiliary per-well content information for plate setup."""
-    volume: float
-    substance: str
 
-# ---------- Full plate configuration ----------
-class PlateInfo(TypedDict, total=False):
-    """Full plate configuration information for initialization."""
-    type: str                        # name of JSON or labware model
-    place: str                       # deck position, e.g. "1"
-    max_volume: float                # µL max capacity per well
-    offset: Dict[str, float]         # x/y/z adjustments
-    content: Dict[str, PlateContent] # optional per-well fill info before the expt
-    on_module: str                   # if set, plate loads onto this module, not a slot
-    mount: str                       # for a tiprack: which pipette mount it serves
+# -------------------- Sessions types --------------------
 
-# ---------- Module configuration ----------
-class ModuleInfo(TypedDict, total=False):
-    """Auxiliary hardware-module information for initialization."""
-    type: str                        # opentrons module load name, e.g. heaterShakerModuleV1
-    place: str                       # deck slot the module occupies
-    adapter: str                     # optional adapter load name loaded onto the module
 
-# ---------- Pipette mount configuration ----------
-class PipetteInfo(TypedDict):
-    """Auxiliary pipette information for initialization."""
-    model: str
+Mode = Literal["manual", "auto"]
 
-# ---------- Full base config for Opentrons class ----------
-class BaseConfig(TypedDict):
-    """Base configuration of hardware for Opentrons initialization."""
-    pipettes: Dict[str, PipetteInfo]              # e.g. {"left": {...}, "right": {...}}
-    core_plates: Dict[str, PlateInfo]             # user-assigned plates
-    stock_plates: Dict[str, PlateInfo]            # virtual source-only plates
-    modules: Dict[str, ModuleInfo]                # hardware modules on the deck
-    robot_type: str                               # "OT-2" (default) or "Flex"; launcher reads it to set AGENT_ROBOT_TYPE
+SessionStatus = Literal[
+    "starting",   # bootstrap in flight (SSH + agent boot)
+    "active",     # agent ready, accepting actions through the proxy
+    "aborting",   # abort received, teardown in flight
+    "ended",      # terminal: completed normally or fully torn down
+    "failed",     # terminal: bootstrap or runtime failure
+]
 
-# ---------- Full agent config for Agent class ----------
-class AgentConfig(TypedDict):
-    """What should agent monitor and what to do."""
-    trigger: str  # e.g. "totally_not_a_file.json"
-    action: str   # e.g. "transfer_liquid"
+TERMINAL_STATUSES: tuple[SessionStatus, ...] = ("ended", "failed")
+
+
+# -------------------- Sessions exceptions --------------------
+
+
+class UnknownRobot(KeyError):
+    """Raised when an operation references a robot_id not in the registry."""
+
+
+class RobotBusy(RuntimeError):
+    """Raised when a session cannot be created because the robot is in use."""
+
+    def __init__(self, robot_id: str):
+        super().__init__(f"robot {robot_id!r} is busy")
+        self.robot_id = robot_id
+
+
+class UnknownSession(KeyError):
+    """Raised when an operation references an unknown session token."""
+
+
+# -------------------- Backend main --------------------
+
+class ArtifactsConfig(TypedDict):
+    base_url: str
+
+class RobotEntry(TypedDict):
+    host: str
+    user: str
+    key_name: str
+    agent_port: NotRequired[int]
+
+class BackendConfig(TypedDict):
+    artifacts: ArtifactsConfig
+    robots: Dict[str, RobotEntry]

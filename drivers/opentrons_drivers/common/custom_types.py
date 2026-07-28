@@ -96,6 +96,7 @@ class BaseConfig(TypedDict):
     core_plates: Dict[str, PlateInfo]             # user-assigned plates
     stock_plates: Dict[str, PlateInfo]            # virtual source-only plates
     modules: Dict[str, ModuleInfo]                # hardware modules on the deck
+    robot_type: str                               # "OT-2" (default) or "Flex"; launcher reads it to set AGENT_ROBOT_TYPE
 
 # ---------- Full agent config for Agent class ----------
 class AgentConfig(TypedDict):
