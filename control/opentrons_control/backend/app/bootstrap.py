@@ -324,6 +324,17 @@ class OTBootstrap:
         PATH, and ``opentrons_drivers`` installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
+        if self.robot_type == "Flex":
+            # Reproduce the Flex `opentrons_execute` wrapper's environment, so the
+            # run identifies the machine even if that wrapper is bypassed or its
+            # exports don't propagate to this process. Without RUNNING_ON_VERDIN
+            # opentrons assumes OT-2 - it reads buildroot_version from
+            # /etc/VERSION.json and robot_settings.json from /data, finds neither,
+            # and collapses to defaults (no pipettes, empty deck config -> the
+            # "C2 not provided" cascade). The feature flag enables the OT-3 (Flex)
+            # hardware controller; without it, no Flex pipettes come up. OT-2
+            # launches must NOT get these (RUNNING_ON_VERDIN would misdetect it).
+            env_prefix += " RUNNING_ON_VERDIN=1 OT_API_FF_enableOT3HardwareController=true"
         # robotType is a static literal in the entry file (opentrons parses it
         # with ast.literal_eval), so we select the matching file rather than pass
         # an env var. OT-2 and Flex ship as sibling entry points in the wheel.
