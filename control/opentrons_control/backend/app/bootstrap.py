@@ -13,6 +13,7 @@ loop via run_in_executor().
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -242,9 +243,18 @@ class OTBootstrap:
         key_path: Path,
         protocol_name: str,
         launch_id: str,
+        robot_type: str = "OT-2",
     ):
         self.ssh = SSHClient(host=host, user=user, key_path=key_path)
-        self.protocol_name = protocol_name
+        # exported to the agent as AGENT_ROBOT_TYPE so its `requirements` block
+        # can declare robotType at import time. "OT-2" (default) or "Flex".
+        self.robot_type = robot_type
+        # slugify: this name is a client- or plan-supplied string that goes
+        # straight into remote shell paths (mkdir, scp). An unsanitised space
+        # splits the command ("wills will" -> two dirs) and a metacharacter
+        # (; $ & quotes) is a remote-shell injection. Keep only path-safe
+        # characters so no name can break or hijack the bootstrap.
+        self.protocol_name = _slug(protocol_name)
         self.launch_id = launch_id
 
     # ------------------------------------------------------------------
@@ -262,7 +272,7 @@ class OTBootstrap:
 
     def prepare_dir(self) -> None:
         """Create the launch directory tree on the OT."""
-        paths = " ".join(self.subdir(name) for name in gv.LAUNCH_SUBDIRS)
+        paths = " ".join(shlex.quote(self.subdir(name)) for name in gv.LAUNCH_SUBDIRS)
         self.ssh.run(f"mkdir -p {paths}")
 
     # ------------------------------------------------------------------
@@ -313,6 +323,7 @@ class OTBootstrap:
         PATH, and ``opentrons_drivers`` installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
+        env_prefix += f" AGENT_ROBOT_TYPE={shlex.quote(self.robot_type)}"
 
         # $(pip show ...) yields the install Location; append the fixed
         # relative path to reach agent_main.py. Word-splitting does not apply
@@ -333,3 +344,15 @@ class OTBootstrap:
             f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null & }}"
         )
         self.ssh.run(cmd)
+
+
+def _slug(name: str) -> str:
+    """Reduce a name to a safe remote path segment.
+
+    Keeps alphanumerics and ``. _ -``; collapses every other run of characters
+    (spaces, quotes, shell metacharacters) to a single underscore and trims
+    leading/trailing underscores. An all-unsafe name falls back to "protocol"
+    so the path segment is never empty.
+    """
+    slugged = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
+    return slugged or "protocol"

@@ -22,7 +22,7 @@ or ``pause`` is a new payload shape, not a schema change.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -120,6 +120,7 @@ class BaseConfig(BaseModel):
     core_plates: dict[str, PlateInfo]
     stock_plates: dict[str, PlateInfo]
     modules: dict[str, ModuleInfo] = Field(default_factory=dict)
+    robot_type: Literal["OT-2", "Flex"] = "OT-2"
 
     @field_validator("pipettes")
     @classmethod
