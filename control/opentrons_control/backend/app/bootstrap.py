@@ -294,6 +294,29 @@ class OTBootstrap:
 
     # ------------------------------------------------------------------
 
+    def _flex_system_version(self) -> str:
+        """Resolve OT_SYSTEM_VERSION as the robot's own opentrons.config reports it.
+
+        opentrons.config gates its Flex (YOCTO) branch on OT_SYSTEM_VERSION being
+        in the environment; a bare SSH launch doesn't inherit it, so we ask the
+        robot for its value and pass it in explicitly. Importing opentrons.config
+        does not raise when the var is unset - it logs and leaves the module
+        default "0.0.0" - so this prints whatever the machine reports: the real
+        version if the SSH env already carries it, else "0.0.0". Either is
+        non-empty, so both satisfy the presence check; no value is hardcoded and
+        no VERSION.json key needs to be known. A failed probe falls back the same.
+        """
+        probe = (
+            "PYTHONPATH=/opt/opentrons-robot-server:$PYTHONPATH python3 -c "
+            "'from opentrons.config import OT_SYSTEM_VERSION; print(OT_SYSTEM_VERSION)' "
+            "2>/dev/null"
+        )
+        try:
+            version = self.ssh.run_output(probe, timeout=30).strip()
+        except SSHError:
+            version = ""
+        return version or gv.FLEX_SYSTEM_VERSION_FALLBACK
+
     def start_agent(self) -> None:
         """
         Launch the agent process detached, with cwd set to the launch
@@ -325,16 +348,21 @@ class OTBootstrap:
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
         if self.robot_type == "Flex":
-            # Reproduce the Flex `opentrons_execute` wrapper's environment, so the
-            # run identifies the machine even if that wrapper is bypassed or its
-            # exports don't propagate to this process. Without RUNNING_ON_VERDIN
-            # opentrons assumes OT-2 - it reads buildroot_version from
-            # /etc/VERSION.json and robot_settings.json from /data, finds neither,
-            # and collapses to defaults (no pipettes, empty deck config -> the
-            # "C2 not provided" cascade). The feature flag enables the OT-3 (Flex)
-            # hardware controller; without it, no Flex pipettes come up. OT-2
-            # launches must NOT get these (RUNNING_ON_VERDIN would misdetect it).
-            env_prefix += " RUNNING_ON_VERDIN=1 OT_API_FF_enableOT3HardwareController=true"
+            # Establish the Flex runtime the launched process would otherwise
+            # inherit from robot-server's systemd unit but doesn't over a bare SSH
+            # launch. opentrons.config gates its architecture branch on
+            # OT_SYSTEM_VERSION being present in the environment: if set ->
+            # ARCHITECTURE = YOCTO (Flex); if absent -> it falls through to reading
+            # buildroot_version from /etc/VERSION.json, which a Flex lacks, and the
+            # whole run collapses to OT-2 defaults (no pipettes, empty deck config
+            # -> the "C2 not provided" cascade). The value only has to be present;
+            # we pass the real one so downstream version logic stays honest. The
+            # feature flag then builds the OT-3 (Flex) hardware controller; without
+            # it, no Flex pipettes come up. OT-2 must NOT get either of these.
+            env_prefix += (
+                f" OT_SYSTEM_VERSION={shlex.quote(self._flex_system_version())}"
+                " OT_API_FF_enableOT3HardwareController=true"
+            )
         # robotType is a static literal in the entry file (opentrons parses it
         # with ast.literal_eval), so we select the matching file rather than pass
         # an env var. OT-2 and Flex ship as sibling entry points in the wheel.

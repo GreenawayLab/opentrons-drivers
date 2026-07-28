@@ -68,6 +68,14 @@ AGENT_MAIN_RELPATH = f"{DRIVERS_PACKAGE}/agent/agent_main.py"
 #: AGENT_MAIN_RELPATH when the config's robot_type is "Flex".
 AGENT_MAIN_FLEX_RELPATH = f"{DRIVERS_PACKAGE}/agent/agent_main_flex.py"
 
+#: Fallback OT_SYSTEM_VERSION for a Flex launch, used ONLY if probing the robot
+#: for its own value fails (see OTBootstrap._flex_system_version). opentrons.config
+#: gates its YOCTO (Flex) branch on OT_SYSTEM_VERSION being present in the env; a
+#: bare SSH launch doesn't inherit it, so we resolve it on the robot and pass it
+#: in. This is the neutral, non-machine-specific default (matches opentrons' own
+#: module default) - only presence matters for detection, and it is non-empty.
+FLEX_SYSTEM_VERSION_FALLBACK = "0.0.0"
+
 
 # -------------------- Driver update --------------------
 #
