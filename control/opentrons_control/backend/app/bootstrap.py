@@ -246,8 +246,9 @@ class OTBootstrap:
         robot_type: str = "OT-2",
     ):
         self.ssh = SSHClient(host=host, user=user, key_path=key_path)
-        # exported to the agent as AGENT_ROBOT_TYPE so its `requirements` block
-        # can declare robotType at import time. "OT-2" (default) or "Flex".
+        # selects which entry file start_agent runs (agent_main.py vs
+        # agent_main_flex.py), since robotType is a static literal per file.
+        # "OT-2" (default) or "Flex".
         self.robot_type = robot_type
         # slugify: this name is a client- or plan-supplied string that goes
         # straight into remote shell paths (mkdir, scp). An unsanitised space
@@ -323,7 +324,10 @@ class OTBootstrap:
         PATH, and ``opentrons_drivers`` installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
-        env_prefix += f" AGENT_ROBOT_TYPE={shlex.quote(self.robot_type)}"
+        # robotType is a static literal in the entry file (opentrons parses it
+        # with ast.literal_eval), so we select the matching file rather than pass
+        # an env var. OT-2 and Flex ship as sibling entry points in the wheel.
+        relpath = gv.AGENT_MAIN_FLEX_RELPATH if self.robot_type == "Flex" else gv.AGENT_MAIN_RELPATH
 
         # $(pip show ...) yields the install Location; append the fixed
         # relative path to reach agent_main.py. Word-splitting does not apply
@@ -337,7 +341,7 @@ class OTBootstrap:
         cmd = (
             f"systemctl stop opentrons-robot-server || true; "
             f"cd {self.launch_dir} && "
-            f"AGENT_MAIN={location}/{gv.AGENT_MAIN_RELPATH} && "
+            f"AGENT_MAIN={location}/{relpath} && "
             f'test -f "$AGENT_MAIN" && '
             f"{{ nohup env {env_prefix} "
             f'opentrons_execute "$AGENT_MAIN" '

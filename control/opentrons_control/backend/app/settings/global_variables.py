@@ -64,6 +64,9 @@ PYTHON_CANDIDATES = ("python3", "python", "/usr/bin/python3")
 #: Path of the agent entry point relative to the installed package's
 #: location (i.e. relative to `pip show`'s reported Location).
 AGENT_MAIN_RELPATH = f"{DRIVERS_PACKAGE}/agent/agent_main.py"
+#: Flex entry point (literal robotType="Flex"); the launcher selects this over
+#: AGENT_MAIN_RELPATH when the config's robot_type is "Flex".
+AGENT_MAIN_FLEX_RELPATH = f"{DRIVERS_PACKAGE}/agent/agent_main_flex.py"
 
 
 # -------------------- Driver update --------------------

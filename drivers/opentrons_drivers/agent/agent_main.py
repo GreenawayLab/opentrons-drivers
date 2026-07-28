@@ -16,7 +16,6 @@ from opentrons import protocol_api
 from opentrons_drivers.agent.base_agent import Agent
 from pathlib import Path
 import json
-import os
 import traceback
 
 metadata = {
@@ -25,14 +24,13 @@ metadata = {
     "description": "Activate OT based on HTTP requests",
 }
 
-# robotType must be known at import time - opentrons_execute reads it before it
-# calls run() - but reading base_config.json here would crash at import on a
-# missing or malformed file, before run()'s crash handler can record it. So it
-# comes from an env var the launcher exports (AGENT_ROBOT_TYPE), defaulting to
-# OT-2 so existing OT-2 launches boot exactly as before. apiLevel lives here now
-# (requirements wins over metadata.apiLevel when both are present).
+# opentrons parses `requirements` STATICALLY (ast.literal_eval), so robotType
+# must be a plain literal - it cannot be computed (no os.environ, no calls).
+# This file is the OT-2 entry; agent_main_flex.py is its Flex twin, and the
+# launcher points opentrons_execute at whichever matches the config's robot_type.
+# apiLevel lives here now (requirements wins over metadata.apiLevel).
 requirements = {
-    "robotType": os.environ.get("AGENT_ROBOT_TYPE", "OT-2"),
+    "robotType": "OT-2",
     "apiLevel": "2.24",
 }
 
