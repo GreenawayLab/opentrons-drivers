@@ -717,7 +717,6 @@ async def user_events_data(request: Request) -> Response:
     r = await call_backend(request, "GET", "/api/user/events")
     return JSONResponse(r.json(), status_code=r.status_code)
 
-
 # ---- admin: user management (page + relays; no create — invites onboard) ----
 
 @app.get("/admin/users", response_class=HTMLResponse)
@@ -790,12 +789,20 @@ async def admin_events_data(request: Request) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.get("/admin/events/data")
+async def admin_events_data(request: Request) -> Response:
+    """JSON proxy: all users' events, for the admin events page."""
+    r = await call_backend(request, "GET", "/api/events")  # admin.py router prefix is /api, not /api/admin
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 @app.get("/admin/events", response_class=HTMLResponse)
 async def admin_events(request: Request) -> Response:
     user, redirect = await _admin_or_redirect(request)
     if redirect:
         return redirect
     return templates.TemplateResponse(request, "admin/events.html", {"user": user})
+
 
 @app.get("/admin/library", response_class=HTMLResponse)
 async def admin_library(request: Request) -> Response:
