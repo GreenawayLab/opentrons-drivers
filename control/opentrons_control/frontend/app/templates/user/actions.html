@@ -377,6 +377,15 @@ function renderHow() {
   if (!h.params) h.params = {};
   const spec = methods.find(m => m.name === h.method);
   const specParams = (spec && spec.params) || [];
+  // Purge params this method no longer declares. A method edited in place (same
+  // name, a renamed/removed param) leaves stale keys in h.params - they are not
+  // rendered but survive into the saved plan and crash the agent (**extra gets an
+  // unexpected keyword). Dropping them on every render keeps the payload in sync
+  // with the current method spec, so re-opening and saving a step cleans it.
+  const specNames = new Set(specParams.map(p => p.name));
+  for (const k of Object.keys(h.params)) {
+    if (!specNames.has(k)) delete h.params[k];
+  }
   const methodOpts = methods.map(m => `<option value="${m.name}" ${m.name === h.method ? "selected" : ""}>${m.name}</option>`).join("")
     || `<option value="${DEFAULT_METHOD}">${DEFAULT_METHOD}</option>`;
   const pips = Object.entries((cfg && cfg.pipettes) || {});
