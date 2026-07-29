@@ -22,7 +22,7 @@ or ``pause`` is a new payload shape, not a schema change.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -120,7 +120,6 @@ class BaseConfig(BaseModel):
     core_plates: dict[str, PlateInfo]
     stock_plates: dict[str, PlateInfo]
     modules: dict[str, ModuleInfo] = Field(default_factory=dict)
-    robot_type: Literal["OT-2", "Flex"] = "OT-2"
 
     @field_validator("pipettes")
     @classmethod
@@ -207,6 +206,30 @@ def labware_wells(definition: dict[str, Any]) -> list[str]:
     if not isinstance(wells, dict) or not wells:
         raise ValueError("not a labware definition: missing a non-empty 'wells' object")
     return list(wells.keys())
+
+
+def standard_unit_refs(config: BaseConfig) -> set[str]:
+    """Return every standard-unit name (built-in load name) a config references.
+
+    The complement of :func:`custom_labware_refs`: non-``.json`` plate types
+    (standard tipracks / plates / reservoirs), pipette models, and module types -
+    the names that live in the ``standard_units`` table. Used to refuse deleting
+    a standard unit while a saved config still depends on it, mirroring the guard
+    on custom labware so no unit type can be deleted out from under a config.
+
+    :param config: The deck config to inspect.
+    """
+    refs: set[str] = set()
+    for plate in (*config.core_plates.values(), *config.stock_plates.values()):
+        if not plate.type.endswith(".json"):
+            refs.add(plate.type)
+    for pipette in config.pipettes.values():
+        if pipette.model:
+            refs.add(pipette.model)
+    for module in config.modules.values():
+        if module.type:
+            refs.add(module.type)
+    return refs
 
 
 def custom_labware_refs(config: BaseConfig) -> set[str]:

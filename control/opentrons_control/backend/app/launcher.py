@@ -32,6 +32,7 @@ from typing import AsyncIterator, Mapping, Optional
 
 from opentrons_control.backend.app.bootstrap import OTBootstrap, SSHError
 from opentrons_control.backend.app.ot_client import OTClient
+from opentrons_control.backend.app.events import log_event
 from opentrons_control.backend.app.robot_sessions import (
     Robot,
     Session,
@@ -238,8 +239,18 @@ async def bootstrap_and_finalize(
     except (ct.FileFormatError, SSHError, ct.OTClientError, OSError) as e:
         registry.mark_failed(session.token, message=str(e))
         registry.release(session.token)
+        log_event(
+            kind="failed", status="failed", source="auto",
+            actor=session.client_id or "automated", robot_id=robot.robot_id,
+            run_id=session.launch_id, session_token=session.token, message=str(e),
+        )
         return
     registry.mark_active(session.token, robot.agent_base_url)
+    log_event(
+        kind="ready", status="active", source="auto",
+        actor=session.client_id or "automated", robot_id=robot.robot_id,
+        run_id=session.launch_id, session_token=session.token,
+    )
 
 
 def _robot_type_from(files: Mapping[str, Mapping[str, ct.JSONType]]) -> str:

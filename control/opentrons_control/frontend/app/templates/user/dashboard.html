@@ -338,4 +338,39 @@ document.getElementById("btn-abort").onclick = async () => {
 loadRunOptions().catch(e => msg(e.message));
 checkActiveRuns();
 </script>
+
+  <section id="history">
+    <h2>My run history</h2>
+    <p class="muted">Every run you have launched, newest first. Runs live in memory
+    and are lost on a restart, but their history is kept here.</p>
+    <table id="history-table">
+      <thead>
+        <tr><th>When</th><th>Event</th><th>Status</th><th>Robot</th><th>Plan</th><th>Detail</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+<script>
+// Self-contained: its own fetch, no dependency on the launch script above, so it
+// can neither break nor be broken by it.
+(async function loadHistory() {
+  let rows;
+  try {
+    const r = await fetch("/user/events");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    rows = await r.json();
+  } catch (e) {
+    document.querySelector("#history-table tbody").innerHTML =
+      `<tr><td colspan="6" class="muted">Could not load history.</td></tr>`;
+    return;
+  }
+  document.querySelector("#history-table tbody").innerHTML = rows.map(e =>
+    `<tr><td>${new Date(e.created_at).toLocaleString()}</td>` +
+    `<td>${e.kind}</td><td>${e.status || ""}</td>` +
+    `<td>${e.robot_id || ""}</td><td>${e.plan_name || ""}</td>` +
+    `<td>${e.message || ""}</td></tr>`
+  ).join("") || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`;
+})();
+</script>
 {% endblock %}

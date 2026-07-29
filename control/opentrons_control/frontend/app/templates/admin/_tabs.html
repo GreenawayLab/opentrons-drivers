@@ -6,6 +6,8 @@
     <a href="/admin/users"{% if request.url.path == "/admin/users" %} class="active"{% endif %}>Users</a>
     <a href="/admin/updates"{% if request.url.path == "/admin/updates" %} class="active"{% endif %}>Driver updates</a>
     <a href="/admin/methods"{% if request.url.path == "/admin/methods" %} class="active"{% endif %}>Methods</a>
+    <a href="/admin/library"{% if request.url.path == "/admin/library" %} class="active"{% endif %}>Library</a>
+    <a href="/admin/events"{% if request.url.path == "/admin/events" %} class="active"{% endif %}>Events</a>
   </div>
   <form method="post" action="/logout"><button class="small">Log out ({{ user.name }})</button></form>
 </div>

@@ -711,6 +711,13 @@ async def deck_delete_config(request: Request, config_id: int) -> Response:
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
+@app.get("/user/events")
+async def user_events_data(request: Request) -> Response:
+    """JSON proxy: this user's own events, for the dashboard history table."""
+    r = await call_backend(request, "GET", "/api/user/events")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
 # ---- admin: user management (page + relays; no create — invites onboard) ----
 
 @app.get("/admin/users", response_class=HTMLResponse)
@@ -774,4 +781,37 @@ async def invites_issue(request: Request) -> Response:
 @app.delete("/admin/invites/{code}")
 async def invites_revoke(request: Request, code: str) -> Response:
     r = await call_backend(request, "DELETE", f"/api/invites/{code}")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+@app.get("/admin/events/data")
+async def admin_events_data(request: Request) -> Response:
+    """JSON proxy: all users' events, for the admin events page."""
+    r = await call_backend(request, "GET", "/api/admin/events")
+    return JSONResponse(r.json(), status_code=r.status_code)
+
+
+@app.get("/admin/events", response_class=HTMLResponse)
+async def admin_events(request: Request) -> Response:
+    user, redirect = await _admin_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "admin/events.html", {"user": user})
+
+@app.get("/admin/library", response_class=HTMLResponse)
+async def admin_library(request: Request) -> Response:
+    # Admin labware management (add + delete). Reuses the /user/deck/* data
+    # proxies, which already work for an admin and whose DELETE routes to the
+    # admin-only /api/labware/{name}. Users get /user/library (no delete).
+    user, redirect = await _admin_or_redirect(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "admin/library.html", {"user": user})
+
+
+@app.delete("/user/deck/standard-units/{name}")
+async def deck_delete_standard_unit(request: Request, name: str) -> Response:
+    # Admin-only delete of a standard unit (module / pipette / tiprack / plate).
+    # Routes to the admin /api/standard-units/{name}, which refuses while a saved
+    # config still references the unit (same guard as custom labware).
+    r = await call_backend(request, "DELETE", f"/api/standard-units/{name}")
     return JSONResponse(r.json(), status_code=r.status_code)

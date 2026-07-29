@@ -236,3 +236,37 @@ CREATE TABLE drafts (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT drafts_pkey PRIMARY KEY (user_id, kind)
 );
+
+CREATE TABLE events (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+ 
+    -- What happened, and the run/session status at that moment. Free text: the
+    -- code owns the vocabulary (launch, booked, ready, running, complete, failed,
+    -- aborted, cancelled, abort_requested, config_saved, plan_saved, deleted, ...).
+    kind          TEXT        NOT NULL,
+    status        TEXT,
+ 
+    -- Who and where. Nullable FK for joins while the row lives; denormalised text
+    -- so the record is self-contained once it doesn't.
+    user_id       BIGINT      REFERENCES users (id)        ON DELETE SET NULL,
+    actor         TEXT,                       -- user name at event time
+    robot_id      TEXT,                       -- robot name; plain text, no FK
+ 
+    -- Optional links to the plan/config a run used. SET NULL, never RESTRICT.
+    plan_id       BIGINT      REFERENCES action_plans (id) ON DELETE SET NULL,
+    plan_name     TEXT,
+    config_id     BIGINT      REFERENCES deck_configs (id) ON DELETE SET NULL,
+ 
+    -- Correlation handles: stitch an event back to its (in-process) run/session.
+    run_id        TEXT,
+    session_token TEXT,
+ 
+    message       TEXT,                       -- human-readable detail or error
+    detail        JSONB       NOT NULL DEFAULT '{}'::jsonb  -- structured extras
+);
+ 
+CREATE INDEX events_created_at_idx ON events (created_at DESC);
+CREATE INDEX events_robot_idx      ON events (robot_id, created_at DESC);
+CREATE INDEX events_user_idx       ON events (user_id, created_at DESC);
+CREATE INDEX events_run_idx        ON events (run_id);
