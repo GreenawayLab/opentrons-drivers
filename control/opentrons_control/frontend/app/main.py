@@ -785,13 +785,6 @@ async def invites_revoke(request: Request, code: str) -> Response:
 @app.get("/admin/events/data")
 async def admin_events_data(request: Request) -> Response:
     """JSON proxy: all users' events, for the admin events page."""
-    r = await call_backend(request, "GET", "/api/admin/events")
-    return JSONResponse(r.json(), status_code=r.status_code)
-
-
-@app.get("/admin/events/data")
-async def admin_events_data(request: Request) -> Response:
-    """JSON proxy: all users' events, for the admin events page."""
     r = await call_backend(request, "GET", "/api/events")  # admin.py router prefix is /api, not /api/admin
     return JSONResponse(r.json(), status_code=r.status_code)
 
