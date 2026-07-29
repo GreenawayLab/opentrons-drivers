@@ -75,12 +75,12 @@ def advanced_liquid_transfer(pipette: InstrumentContext,
             can = pipette.max_volume - a
             initial_ag = min(can * 0.3 * airgap, can)
             midway_ag = min(can * 0.15 * (1-airgap), can-initial_ag)
-            pipette.aspirate(a, fr.bottom(z=2), rate=asprate) 
+            pipette.aspirate(a, fr.bottom(z=2), flow_rate=asprate) 
             [pipette.touch_tip(fr) for _ in range(touchtip)] 
             pipette.air_gap(initial_ag) 
             pipette.move_to(help.midpoint(fr,to)) 
             pipette.air_gap(midway_ag, in_place = True) # type: ignore[call-arg]
-            pipette.dispense(a, location=to.top(z=1), rate=disrate) 
+            pipette.dispense(a, location=to.top(z=1), flow_rate=disrate) 
             [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
             [pipette.touch_tip(to) for _ in range(touchtip)]
         
