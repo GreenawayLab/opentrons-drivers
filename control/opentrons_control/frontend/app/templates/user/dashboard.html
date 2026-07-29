@@ -10,6 +10,7 @@
     <h2>Run a plan</h2>
     <label>Robot <select id="run-robot"></select></label>
     <label>Action plan <select id="run-plan"></select></label>
+    <label>Version <select id="run-version"></select></label>
     <button id="btn-submit">Submit</button>
     <p class="muted" style="font-size:12px">Submitting books the robot and boots the agent. You can calibrate offsets before the run starts, or run straight away.</p>
   </section>
@@ -129,8 +130,24 @@ async function loadRunOptions() {
     ? robots.map(r => `<option value="${r.robot_id}" ${r.enabled ? "" : "disabled"}>${r.robot_id}${r.enabled ? "" : " (offline)"}</option>`).join("")
     : `<option value="">no robots</option>`;
   document.getElementById("run-plan").innerHTML = plans.length
-    ? plans.map(p => `<option value="${p.id}">${p.name} v${p.major}.${p.minor}.${p.patch}</option>`).join("")
+    ? plans.map(p => `<option value="${p.id}">${p.name}</option>`).join("")
     : `<option value="">no plans</option>`;
+  document.getElementById("run-plan").onchange = loadVersions;
+  await loadVersions();
+}
+
+// The plan dropdown lists families (one per name); this fills the version
+// dropdown for the selected family from the existing versions endpoint, so any
+// version can be run - not just the latest. Newest first.
+async function loadVersions() {
+  const planSel = document.getElementById("run-plan");
+  const verSel = document.getElementById("run-version");
+  if (!planSel.value) { verSel.innerHTML = `<option value="">\u2014</option>`; return; }
+  let versions = [];
+  try { versions = await api("GET", `/user/plans/${planSel.value}/versions`); } catch (_) { versions = []; }
+  verSel.innerHTML = versions.length
+    ? versions.map(v => `<option value="${v.id}">v${v.major}.${v.minor}.${v.patch}</option>`).join("")
+    : `<option value="">no versions</option>`;
 }
 
 // A detail payload carries everything the page needs to render a run, so the
@@ -184,11 +201,11 @@ async function reattach(runId) {
 // ---- submit / open ----
 document.getElementById("btn-submit").onclick = async () => {
   const robot = document.getElementById("run-robot").value;
-  const planSel = document.getElementById("run-plan");
-  if (!robot || !planSel.value) { msg("Pick a robot and a plan."); return; }
+  const verSel = document.getElementById("run-version");
+  if (!robot || !verSel.value) { msg("Pick a robot and a plan version."); return; }
   msg("");
   try {
-    run = await api("POST", "/user/runs", { plan_id: Number(planSel.value), robot_id: robot });
+    run = await api("POST", "/user/runs", { plan_id: Number(verSel.value), robot_id: robot });
     applyRunDetail(run);
     document.getElementById("resume-banner").style.display = "none";
     document.getElementById("cal").style.display = "none";
@@ -208,9 +225,13 @@ function readyStatus(t, ok) {
   el.classList.toggle("ok", !!ok);
 }
 function setBooking(busy) {
-  for (const id of ["btn-calibrate", "btn-run-now", "btn-cancel"]) {
+  // Cancel must stay live during booking: the backend supports cancelling a
+  // booking run, and it is the only escape from a mis-sent run before the ~3 min
+  // boot completes. Only calibrate/run-now (which need a ready agent) are gated.
+  for (const id of ["btn-calibrate", "btn-run-now"]) {
     document.getElementById(id).disabled = busy;
   }
+  document.getElementById("btn-cancel").disabled = false;
   readyStatus(busy ? "Booking robot and starting agent…" : "", false);
 }
 async function waitForReady() {
