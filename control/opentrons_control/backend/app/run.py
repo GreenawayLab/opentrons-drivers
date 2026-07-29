@@ -320,7 +320,10 @@ class Executor:
                         snap = await client.get_job(snap.job_id)
                     if snap.status == "failed":
                         self.run.status = "failed"
-                        self.run.error = f"command {self.run.cursor + 1} ({cmd.action}) failed on the robot"
+                        detail = (snap.error or "").strip() or "no detail reported by the agent"
+                        self.run.error = (
+                            f"command {self.run.cursor + 1} ({cmd.action}) failed on the robot:\n{detail}"
+                        )
                         self._event("failed")
                         return
                     self.run.cursor += 1
@@ -328,7 +331,11 @@ class Executor:
                 self._event("complete")
         except Exception as exc:  # agent unreachable, bootstrap gap, transport error
             self.run.status = "failed"
-            self.run.error = str(exc)
+            self.run.error = (
+                f"lost contact with the robot during command {self.run.cursor + 1}"
+                f" of {len(self.run.stream)}: {exc}. The agent may have crashed"
+                f" (e.g. a hardware fault); check the robot's postbox/status.json."
+            )
             self._event("failed")
         finally:
             await self._teardown()
