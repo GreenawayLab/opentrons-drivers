@@ -41,11 +41,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy.orm import Session
 
-from opentrons_control.backend.app.launcher import (
-    acquire_session,
-    bootstrap_and_finalize,
-    launch_session,
-)
+from opentrons_control.backend.app.launcher import launch_session
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.robot_sessions import (
     Robot,
@@ -243,47 +239,51 @@ def create_app(robots: Mapping[str, Robot]) -> FastAPI:
     @app.post(
         "/internal/sessions",
         response_model=CreateSessionResponse,
-        status_code=202,
+        status_code=201,
     )
     async def create_session(
         req: CreateSessionRequest,
     ) -> CreateSessionResponse:
-        """Acquire the robot and return at once; the bootstrap runs detached.
+        """Boot the agent and return only once it is ready (synchronous).
 
-        Acquiring the lock is fast, and its failures (unknown robot, busy) answer
-        synchronously. The bootstrap - file staging, agent boot, readiness wait -
-        takes tens of seconds, far past any sane proxy read timeout, so it runs as
-        a background task and the caller polls GET /sessions/{token}/details until
-        the status is ``active`` or ``failed``. This mirrors the manual run path,
-        which detaches for the same reason. The returned session is ``starting``.
+        The bootstrap - file staging, agent boot, readiness wait - runs inline and
+        the response is held until the agent reports ready, so the caller receives
+        a 201 with an already-active session. This is the contract the un-pollable
+        clients expect (they treat 201 as "ready to send actions"). The proxy read
+        timeout must exceed the readiness budget for a slow boot to survive the
+        held connection; that is why it is raised to 360s. (The detached 202 path
+        was reverted: it required every client to poll /sessions/{token}/details
+        until active, which the deployed OTDriver does not do.)
         """
         try:
-            session, robot = await acquire_session(
+            session = await launch_session(
                 registry,
                 robot_id=req.robot_id,
                 protocol_name=req.protocol_name,
                 mode=req.mode,
+                files=req.files,
                 client_id=req.client_id,
             )
         except ct.UnknownRobot:
             raise HTTPException(status_code=404, detail=f"unknown robot {req.robot_id!r}")
         except ct.RobotBusy as e:
             raise HTTPException(status_code=409, detail=str(e))
+        except ct.FileFormatError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except ct.BootstrapFailed as e:
+            log_event(
+                kind="failed", status="failed", source="auto",
+                actor=req.client_id or "automated", robot_id=req.robot_id,
+                message=str(e),
+                detail={"client_id": req.client_id, "protocol_name": req.protocol_name, "mode": req.mode},
+            )
+            raise HTTPException(status_code=502, detail=str(e))
 
         log_event(
-            kind="launch", status=session.status, source="auto",
+            kind="ready", status=session.status, source="auto",
             actor=req.client_id or "automated", robot_id=req.robot_id,
             run_id=session.launch_id, session_token=session.token,
             detail={"client_id": req.client_id, "protocol_name": req.protocol_name, "mode": req.mode},
-        )
-        asyncio.create_task(
-            bootstrap_and_finalize(
-                registry,
-                session,
-                robot,
-                protocol_name=req.protocol_name,
-                files=req.files,
-            )
         )
         return CreateSessionResponse(
             token=session.token,
