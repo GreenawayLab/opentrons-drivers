@@ -91,12 +91,12 @@ def advanced_liquid_transfer(pipette: InstrumentContext,
             # agent with no catchable error.
             initial_ag = max(0.0, min(can * 0.3 * airgap, can))
             midway_ag = max(0.0, min(can * 0.15 * (1 - airgap), can - initial_ag))
-            pipette.aspirate(a, fr.bottom(z=2), rate=asprate) 
+            pipette.aspirate(a, fr.bottom(z=2), flow_rate=asprate) 
             [pipette.touch_tip(fr) for _ in range(touchtip)] 
             pipette.air_gap(initial_ag) 
             pipette.move_to(help.midpoint(fr,to)) 
             pipette.air_gap(midway_ag, in_place = True) # type: ignore[call-arg]
-            pipette.dispense(a, location=to.top(z=1), rate=disrate) 
+            pipette.dispense(a, location=to.top(z=1), flow_rate=disrate) 
             [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
             [pipette.touch_tip(to) for _ in range(touchtip)]
         
@@ -148,12 +148,12 @@ def semi_advanced_liquid_transfer(pipette: InstrumentContext,
             f"tip capacity {pipette.max_volume} uL; reduce a value"
         )
     for a in amts:
-        pipette.aspirate(a, fr.bottom(z=2), rate=asprate)
+        pipette.aspirate(a, fr.bottom(z=2), flow_rate=asprate)
         [pipette.touch_tip(fr) for _ in range(touchtip)]
         pipette.air_gap(airgap)
         pipette.move_to(help.midpoint(fr, to))
         pipette.air_gap(midgap, in_place=True)  # type: ignore[call-arg]
-        pipette.dispense(a, location=to.top(z=1), rate=disrate)
+        pipette.dispense(a, location=to.top(z=1), flow_rate=disrate)
         [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
         [pipette.touch_tip(to) for _ in range(touchtip)]
     # no final move back to the source well
@@ -163,7 +163,7 @@ def semi_advanced_liquid_transfer(pipette: InstrumentContext,
 def viscous_liquid_transfer(pipette: InstrumentContext, 
                              to: Well, fr: Well, 
                              amount: float, 
-                             rate: float) -> None:
+                             flow_rate: float) -> None:
     """
     Transfer method for viscous liquids.
 
@@ -174,7 +174,7 @@ def viscous_liquid_transfer(pipette: InstrumentContext,
         to (Well): Target well.
         fr (Well): Source well.
         amount (float): Volume to transfer.
-        rate (float): Aspiration/dispense rate multiplier.
+        flow_rate (float): Aspiration/dispense flow rate multiplier.
 
     Returns:
         None
@@ -183,14 +183,14 @@ def viscous_liquid_transfer(pipette: InstrumentContext,
     for a in amts:
         pipette.move_to(fr.bottom(z=3))
         time.sleep(10)
-        pipette.aspirate(a, fr.bottom(z=3), rate=rate)
+        pipette.aspirate(a, fr.bottom(z=3), flow_rate=flow_rate)
         [pipette.touch_tip(radius=0.5, speed=30, v_offset=-50) for _ in range(3)]
         pipette.move_to(fr.top())
         time.sleep(10)
         [pipette.touch_tip(radius=1, speed=30, v_offset=-10) for _ in range(3)]
-        pipette.dispense(a, location=to.top(z=1), rate=rate)
+        pipette.dispense(a, location=to.top(z=1), flow_rate=flow_rate)
         pipette.touch_tip(radius=1, speed=400, v_offset=-5)
-        pipette.dispense(a, location=fr.top(z=-1), rate=rate)
+        pipette.dispense(a, location=fr.top(z=-1), flow_rate=flow_rate)
         pipette.blow_out(location=fr.top(z=1))
 
 
