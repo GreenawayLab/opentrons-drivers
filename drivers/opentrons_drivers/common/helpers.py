@@ -47,17 +47,27 @@ def liquid_batching(pipette: InstrumentContext, amt: float, reserve: float = 0.0
         amt (float): Total volume to transfer.
         reserve (float): Volume in uL to keep free in the tip on every aspirate -
             e.g. air gaps drawn on top of each chunk. Chunks are sized to
-            max_volume - reserve, so a chunk plus its air gaps never overflows the
+            working_volume - reserve, so a chunk plus its air gaps never overflows
             tip. Defaults to 0 (the original full-capacity chunking).
 
     Returns:
         List[float]: A list of individual volumes to transfer in sequence.
     """
-    max_vol = pipette.max_volume - reserve
+    # Size against the WORKING volume, not max_volume. max_volume is the nominal
+    # pipette figure (e.g. 300 for a p300); the real aspirate ceiling for the
+    # attached tip is lower (opentrons holds back ~10%, so a "300" tip may only
+    # take 270). Using max_volume overfills and raises InvalidAspirateVolumeError
+    # on the robot. get_working_volume is the exact number opentrons enforces;
+    # fall back to max_volume only if the (private) accessor is unavailable.
+    try:
+        usable = float(pipette._core.get_working_volume())
+    except Exception:  # noqa: BLE001 - fall back to the nominal max
+        usable = float(pipette.max_volume)
+    max_vol = usable - reserve
     if max_vol <= 0:
         raise ValueError(
             f"reserved volume {reserve} uL leaves no room in a "
-            f"{pipette.max_volume} uL tip"
+            f"{usable} uL working tip"
         )
     amts = [max_vol for _ in range(int(amt // max_vol))]
     res = amt % max_vol
