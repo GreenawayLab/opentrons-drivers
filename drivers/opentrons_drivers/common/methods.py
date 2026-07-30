@@ -43,7 +43,7 @@ def basic_liquid_transfer(pipette: InstrumentContext,
     for a in amts:
         pipette.aspirate(a, fr)
         pipette.air_gap(airgap)
-        pipette.dispense(location=to.top(z=1))
+        pipette.dispense(a+airgap, location=to.top(z=1))
         pipette.blow_out(location=to.top(z=1))
 
 
@@ -96,7 +96,7 @@ def advanced_liquid_transfer(pipette: InstrumentContext,
             pipette.air_gap(initial_ag) 
             pipette.move_to(help.midpoint(fr,to)) 
             pipette.air_gap(midway_ag, in_place = True) # type: ignore[call-arg]
-            pipette.dispense(a, location=to.top(z=1), flow_rate=disrate) 
+            pipette.dispense(a+midway_ag+initial_ag, location=to.top(z=1), flow_rate=disrate) 
             [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
             [pipette.touch_tip(to) for _ in range(touchtip)]
         
@@ -153,7 +153,7 @@ def semi_advanced_liquid_transfer(pipette: InstrumentContext,
         pipette.air_gap(airgap)
         pipette.move_to(help.midpoint(fr, to))
         pipette.air_gap(midgap, in_place=True)  # type: ignore[call-arg]
-        pipette.dispense(a, location=to.top(z=1), flow_rate=disrate)
+        pipette.dispense(a+midgap+airgap, location=to.top(z=1), flow_rate=disrate)
         [pipette.blow_out(location=to.top(z=1)) for _ in range(blowout)]
         [pipette.touch_tip(to) for _ in range(touchtip)]
     # no final move back to the source well
