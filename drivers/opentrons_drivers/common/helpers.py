@@ -38,18 +38,27 @@ def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[
 
 #---------- Liquid transfer low-level functions ----------
 
-def liquid_batching(pipette: InstrumentContext, amt: float) -> List[float]:
+def liquid_batching(pipette: InstrumentContext, amt: float, reserve: float = 0.0) -> List[float]:
     """
     Split a large transfer volume into pipette-sized batches.
 
     Parameters:
         pipette (InstrumentContext): The pipette being used.
         amt (float): Total volume to transfer.
+        reserve (float): Volume in uL to keep free in the tip on every aspirate -
+            e.g. air gaps drawn on top of each chunk. Chunks are sized to
+            max_volume - reserve, so a chunk plus its air gaps never overflows the
+            tip. Defaults to 0 (the original full-capacity chunking).
 
     Returns:
         List[float]: A list of individual volumes to transfer in sequence.
     """
-    max_vol = pipette.max_volume
+    max_vol = pipette.max_volume - reserve
+    if max_vol <= 0:
+        raise ValueError(
+            f"reserved volume {reserve} uL leaves no room in a "
+            f"{pipette.max_volume} uL tip"
+        )
     amts = [max_vol for _ in range(int(amt // max_vol))]
     res = amt % max_vol
     if res > 0:

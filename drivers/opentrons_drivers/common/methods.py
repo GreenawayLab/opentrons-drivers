@@ -32,7 +32,7 @@ def basic_liquid_transfer(pipette: InstrumentContext,
     Returns:
         None
     """
-    amts = help.liquid_batching(pipette, amount)
+    amts = help.liquid_batching(pipette, amount, reserve=airgap)
     if airgap < 0:
         raise ValueError(f"airgap must be non-negative, got {airgap}")
     if amts and airgap + max(amts) > pipette.max_volume:
@@ -141,7 +141,7 @@ def semi_advanced_liquid_transfer(pipette: InstrumentContext,
     """
     if airgap < 0 or midgap < 0:
         raise ValueError(f"airgap and midgap must be non-negative, got {airgap}, {midgap}")
-    amts = help.liquid_batching(pipette, amount)
+    amts = help.liquid_batching(pipette, amount, reserve=airgap + midgap)
     if amts and airgap + midgap + max(amts) > pipette.max_volume:
         raise ValueError(
             f"airgap {airgap} + midgap {midgap} + aspirate {max(amts)} uL exceeds "

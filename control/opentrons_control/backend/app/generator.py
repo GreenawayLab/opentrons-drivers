@@ -91,6 +91,23 @@ def _ordered_wells(wells: list[str], order: dict[str, Any] | None) -> list[str]:
     return sorted(wells, key=key, reverse=reverse)
 
 
+def _pipette_max_volume(model: str) -> float | None:
+    """Best-effort tip capacity in uL from a pipette model name, else None.
+
+    Parsed from opentrons naming (OT-2 ``p300_single_gen2`` -> 300, Flex
+    ``flex_1channel_1000`` -> 1000) only for the pre-submit air-gap check; the
+    robot uses the real ``pipette.max_volume`` at run time. Unknown names return
+    None so the check is skipped rather than raising a false alarm.
+    """
+    m = re.match(r"p(\d+)_", model)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"channel_(\d+)", model)
+    if m:
+        return float(m.group(1))
+    return None
+
+
 def plan_to_protocol(
     config: BaseConfig,
     steps: list[dict[str, Any]],
@@ -154,6 +171,19 @@ def plan_to_protocol(
         mount = default_mount if pipette == "auto" else pipette
         pip_info = config.pipettes.get(mount)
         channels = pip_info.channels if pip_info is not None else 1
+
+        # Air-gap capacity: airgap (+ midgap) is reserved from the tip before the
+        # liquid is sliced, so if it meets or exceeds tip capacity there is no room
+        # to aspirate and the transfer fails on the robot. Catch it at check time.
+        # Best-effort: skipped when the pipette capacity can't be derived.
+        reserve = float(params.get("airgap", 0) or 0) + float(params.get("midgap", 0) or 0)
+        if reserve > 0 and pip_info is not None:
+            maxv = _pipette_max_volume(pip_info.model)
+            if maxv is not None and reserve >= maxv:
+                errors.append(
+                    f"step {i + 1}: air gap {reserve:g} uL leaves no room in the "
+                    f"{pip_info.model} tip ({maxv:g} uL) - reduce the air gap"
+                )
 
         # each transfer: (source, receiver, amount, recv_wells, src_wells|None)
         transfers: list[tuple[list[Any], list[Any], float, list[str], list[str] | None]] = []
