@@ -411,10 +411,12 @@ function renderHow() {
         <option value="reuse" ${h.tip === "reuse" ? "selected" : ""}>reuse one tip</option>
       </select>
     </label>
+    <label style="display:block"><input type="checkbox" id="how-return-tip" ${h.return_tip ? "checked" : ""}> Return tip to rack when done (reuse later, don't trash)</label>
     <label>Pipette <select id="how-pipette">${pipOpts}</select></label>
     <p class="muted" style="font-size:11px">${specParams.length ? "Enter the parameters for this method." : "This method has no parameters."}</p>`;
   document.getElementById("how-method").onchange = e => { editStep.how.method = e.target.value; editStep.how.params = {}; renderHow(); };
   document.getElementById("how-tip").onchange = e => { editStep.how.tip = e.target.value; };
+  document.getElementById("how-return-tip").onchange = e => { editStep.how.return_tip = e.target.checked; };
   document.getElementById("how-pipette").onchange = e => { editStep.how.pipette = e.target.value; renderEditor(); };
   document.querySelectorAll("#how-params [data-hp]").forEach(inp => {
     const handler = e => {

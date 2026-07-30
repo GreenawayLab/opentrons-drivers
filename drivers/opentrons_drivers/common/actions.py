@@ -1,4 +1,5 @@
 import time
+import inspect
 from typing import cast
 from opentrons_drivers.common.custom_types import ActionFn
 from opentrons_drivers.common.methods import LIQUID_METHODS, MODULE_METHODS
@@ -95,6 +96,10 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         raise ValueError("tip_cycle must be a tuple/list of two booleans")
 
     tip_on, tip_off = tips_raw
+    # When dropping the tip, return it to its rack slot instead of the trash, so it
+    # can be reused (e.g. keep the same tips across a multi-step mix). Default off
+    # preserves the original drop-to-trash behaviour.
+    return_tip = bool(arg.get("return_tip", False))
 
     swell_time = cast(float, arg.get("swell_time", 0.0))
     swell_cycle = cast(int, arg.get("swell_cycle", 1))
@@ -105,7 +110,7 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         if k not in {
             "source", "receiver", "amount", "method",
             "pipette_mount", "swell_time", "swell_cycle", "tip_cycle",
-            "wells", "source_wells",
+            "wells", "source_wells", "return_tip",
         }
     }
 
@@ -114,6 +119,14 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     if transfer_fn is None:
         raise ValueError(f"Unknown transfer method '{method}'. "
                          f"Available: {list(LIQUID_METHODS)}")
+
+    # Keep only params this method actually accepts. A plan edited in place - a
+    # method deleted and re-added with a renamed param - leaves the old key in the
+    # saved payload; **extra would then raise an opaque TypeError deep in opentrons
+    # ("unexpected keyword argument"). Filtering turns that into a clean run, or a
+    # clear "missing required argument" if the new param was never supplied.
+    _accepted = set(inspect.signature(transfer_fn).parameters)
+    extra = {k: v for k, v in extra.items() if k in _accepted}
 
     # prep tip (a multi-channel pick_up_tip grabs a whole column of tips)
     if tip_on:
@@ -197,7 +210,10 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         raise ValueError("`source` must be ['substance'] or ['plate', 'well'].")
 
     if tip_off:
-        pipette.drop_tip()
+        if return_tip:
+            pipette.return_tip()  # back to its rack slot, kept for reuse
+        else:
+            pipette.drop_tip()
 
     state = ctx["system_state"]
     # the receiver anchor always defines the new "location"
