@@ -299,7 +299,7 @@ def move(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bo
     plate = cast(str, arg["plate"])
     well = cast(str, arg["well"])
     help.safe_lift(pip, ctx)
-    pos = ctx["core_amounts"][plate][well]["position"]
+    pos = ctx["core_plates"][plate][well]["position"]
     x = float(arg.get("x", 0.0))
     y = float(arg.get("y", 0.0))
     z = float(arg.get("z", 0.0))
@@ -319,7 +319,7 @@ def probe_pickup(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
     help.require_single_channel(pip, "probe_pickup")
     plate = cast(str, arg["holder"])
     well = cast(str, arg["well"])
-    pos = ctx["core_amounts"][plate][well]["position"]
+    pos = ctx["core_plates"][plate][well]["position"]
     speed = float(arg.get("speed", 80))
     approach_z = float(arg.get("approach_z", 30))
     pip.move_to(pos.top(approach_z), speed=speed)
@@ -335,7 +335,7 @@ def probe_return(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
     help.require_single_channel(pip, "probe_return")
     plate = cast(str, arg["holder"])
     well = cast(str, arg["well"])
-    pos = ctx["core_amounts"][plate][well]["position"]
+    pos = ctx["core_plates"][plate][well]["position"]
     speed = float(arg.get("speed", 80))
     approach_z = float(arg.get("approach_z", 30))
     pip.move_to(pos.top(approach_z), speed=speed)
