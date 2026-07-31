@@ -1,7 +1,9 @@
 import time
-from typing import Callable, Any
+from typing import Callable, Any, cast
 from opentrons.protocol_api.labware import Well
 from opentrons.protocol_api.instrument_context import InstrumentContext
+from opentrons.types import Point
+from opentrons_drivers.common.custom_types import StaticCtx, JSONType
 import opentrons_drivers.common.helpers as help
 
 LIQUID_METHODS: dict[str, Callable[..., object]] = {}
@@ -247,3 +249,96 @@ def heater_shaker_latch(module: Any, protocol: Any, action: str = "open") -> Non
         module.close_labware_latch()
     else:
         module.open_labware_latch()
+
+# ===========================================================================
+# Mechanical methods: parameterised gantry-move routines. Dispatched by the
+# `mechanical_move` action, mirroring how `transfer_execution` dispatches
+# LIQUID_METHODS. Signature: (pip: InstrumentContext, ctx: StaticCtx, arg) -> bool.
+# Shared helpers (require_single_channel, safe_lift) live in helpers.py.
+# Add a new tool by registering another method - no dispatcher edits.
+# ===========================================================================
+MECHANICAL_METHODS: dict[str, Callable[..., object]] = {}
+register_mechanical_method = help.make_registry_decorator(MECHANICAL_METHODS)
+
+
+@register_mechanical_method("lift")
+def lift(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Lift the tool clear and record the state."""
+    help.require_single_channel(pip, "lift")
+    help.safe_lift(pip, ctx)
+    help.record_state(ctx, "lift")
+    return True
+
+
+@register_mechanical_method("wash")
+def wash(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Move the tool over the wash solvent tank, debiting the requested volume, 
+    as external system pumps the liquid there."""
+    help.require_single_channel(pip, "wash")
+    amount = float(arg["amount"])
+    wells = ctx["stock_amounts"]["wash_solv"]
+    if wells[0]["volume"] < amount:
+        raise RuntimeError("Wash solvent insufficient")
+    help.safe_lift(pip, ctx)
+    pos = wells[0]["position"]
+    pip.move_to(pos.top(30))
+    wells[0]["volume"] -= amount
+    help.record_state(ctx, "wash", plate=None, well=None, last_args=arg)
+    return True
+
+
+@register_mechanical_method("move")
+def move(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Move whatever is on the gantry to a well; final placement fully parametric.
+
+    Whatever tool is on the gantry now (probe, tip, ...) is taken to
+    arg["plate"]/arg["well"]. The final placement is offset from the well top by
+    arg x/y/z (each defaults to 0, i.e. the well top).
+    """
+    help.require_single_channel(pip, "move")
+    plate = cast(str, arg["plate"])
+    well = cast(str, arg["well"])
+    help.safe_lift(pip, ctx)
+    pos = ctx["core_amounts"][plate][well]["position"]
+    x = float(arg.get("x", 0.0))
+    y = float(arg.get("y", 0.0))
+    z = float(arg.get("z", 0.0))
+    pip.move_to(pos.top().move(Point(x, y, z)))
+    help.record_state(ctx, "move", plate=plate, well=well, last_args=arg)
+    return True
+
+
+@register_mechanical_method("probe_pickup")
+def probe_pickup(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Engage the tip-shaped probe by moving the nozzle onto it - no tip API.
+
+    The probe is a 3D-printed part shaped like a tip, held in a normal labware;
+    pickup is a physical move onto it. Anchor: arg["holder"]/arg["well"]. `speed`
+    and clearance `approach_z` come from the payload.
+    """
+    help.require_single_channel(pip, "probe_pickup")
+    plate = cast(str, arg["holder"])
+    well = cast(str, arg["well"])
+    pos = ctx["core_amounts"][plate][well]["position"]
+    speed = float(arg.get("speed", 80))
+    approach_z = float(arg.get("approach_z", 30))
+    pip.move_to(pos.top(approach_z), speed=speed)
+    pip.move_to(pos.top(0), speed=speed)  # descend to engage the probe
+    help.record_state(ctx, "probe_pickup")
+    return True
+
+
+@register_mechanical_method("probe_return")
+def probe_return(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Return the probe to its holder and eject with drop_tip.
+    """
+    help.require_single_channel(pip, "probe_return")
+    plate = cast(str, arg["holder"])
+    well = cast(str, arg["well"])
+    pos = ctx["core_amounts"][plate][well]["position"]
+    speed = float(arg.get("speed", 80))
+    approach_z = float(arg.get("approach_z", 30))
+    pip.move_to(pos.top(approach_z), speed=speed)
+    pip.drop_tip(pos.top(0))
+    help.record_state(ctx, "probe_return")
+    return True

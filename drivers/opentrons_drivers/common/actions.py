@@ -1,8 +1,7 @@
 import time
-import inspect
 from typing import cast
 from opentrons_drivers.common.custom_types import ActionFn
-from opentrons_drivers.common.methods import LIQUID_METHODS, MODULE_METHODS
+from opentrons_drivers.common.methods import LIQUID_METHODS, MODULE_METHODS, MECHANICAL_METHODS
 from opentrons_drivers.common.custom_types import CoreWell, StaticCtx, JSONType
 from opentrons.protocol_api.labware import Labware, Well
 from opentrons.types import Point, Location
@@ -96,10 +95,6 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         raise ValueError("tip_cycle must be a tuple/list of two booleans")
 
     tip_on, tip_off = tips_raw
-    # When dropping the tip, return it to its rack slot instead of the trash, so it
-    # can be reused (e.g. keep the same tips across a multi-step mix). Default off
-    # preserves the original drop-to-trash behaviour.
-    return_tip = bool(arg.get("return_tip", False))
 
     swell_time = cast(float, arg.get("swell_time", 0.0))
     swell_cycle = cast(int, arg.get("swell_cycle", 1))
@@ -110,7 +105,7 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         if k not in {
             "source", "receiver", "amount", "method",
             "pipette_mount", "swell_time", "swell_cycle", "tip_cycle",
-            "wells", "source_wells", "return_tip",
+            "wells", "source_wells",
         }
     }
 
@@ -119,14 +114,6 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     if transfer_fn is None:
         raise ValueError(f"Unknown transfer method '{method}'. "
                          f"Available: {list(LIQUID_METHODS)}")
-
-    # Keep only params this method actually accepts. A plan edited in place - a
-    # method deleted and re-added with a renamed param - leaves the old key in the
-    # saved payload; **extra would then raise an opaque TypeError deep in opentrons
-    # ("unexpected keyword argument"). Filtering turns that into a clean run, or a
-    # clear "missing required argument" if the new param was never supplied.
-    _accepted = set(inspect.signature(transfer_fn).parameters)
-    extra = {k: v for k, v in extra.items() if k in _accepted}
 
     # prep tip (a multi-channel pick_up_tip grabs a whole column of tips)
     if tip_on:
@@ -210,10 +197,7 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
         raise ValueError("`source` must be ['substance'] or ['plate', 'well'].")
 
     if tip_off:
-        if return_tip:
-            pipette.return_tip()  # back to its rack slot, kept for reuse
-        else:
-            pipette.drop_tip()
+        pipette.drop_tip()
 
     state = ctx["system_state"]
     # the receiver anchor always defines the new "location"
@@ -225,97 +209,24 @@ def transfer_execution(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     return True
 
 
-@register_action("sampler_action")
-def sampler_action(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
-    sampler_mount = cast(str, arg.get("sampler_mount", "left"))
-    pip = ctx["pipettes"][sampler_mount]
-    state = ctx["system_state"]
+@register_action("mechanical_move")
+def mechanical_move(ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
+    """Dispatch a mechanical (gantry-move) routine by name.
 
-    # The sampler probes individual wells, which is only coherent one channel at a
-    # time: a multichannel engages a whole column and cannot address any well
-    # outside row A. Fail fast rather than crash on the first non-row-A move.
-    if pip.channels != 1:
-        raise RuntimeError(
-            f"sampler_action needs a single-channel pipette on mount "
-            f"'{sampler_mount}', but it holds a {pip.channels}-channel pipette"
+    Mirrors how transfer_execution dispatches LIQUID_METHODS: resolve the pipette,
+    then hand off to the registered MECHANICAL_METHODS routine. Adding a tool
+    (probe, sampler, ...) is a new @register_mechanical_method - no edit here.
+    """
+    mount = cast(str, arg.get("mount", "left"))
+    pip = ctx["pipettes"][mount]
+    method = arg.get("method")
+    fn = MECHANICAL_METHODS.get(method)  # type: ignore[arg-type]
+    if fn is None:
+        raise ValueError(
+            f"Unknown mechanical method '{method}'. Available: {list(MECHANICAL_METHODS)}"
         )
+    return bool(fn(pip, ctx, arg))
 
-    mode = arg.get("mode")
-    if mode not in {"scan", "wash", "lift"}:
-        raise ValueError(f"Unknown sampler mode: {mode}")
-
-    # ---------- Helper: safe lift ----------
-    def safe_lift():
-        plate = state.get("plate")
-        well = state.get("well")
-        mode_prev = state.get("last_action")
-
-        if plate is None or well is None:
-        # try to find the first available core position
-            core = ctx["core_amounts"]
-            if core:
-                first_plate = next(iter(core.keys()))
-                first_well = next(iter(core[first_plate].keys()))
-                pos = core[first_plate][first_well]["position"]
-                pip.move_to(pos.top(50))
-            return
-
-        if mode_prev == "wash":
-            wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
-            pip.move_to(wash.top(50))
-            return
-        else:
-            pos = ctx["core_amounts"][plate][well]["position"]
-            pip.move_to(pos.top(50))
-            return
-
-    # ---------- LIFT ----------
-    if mode == "lift":
-        safe_lift()
-
-        state["last_action"] = "lift"
-        state["timestamp"] = time.time()
-        return True
-
-    # ---------- WASH ----------
-    elif mode == "wash":
-        amount = float(arg["amount"])
-        wells = ctx["stock_amounts"]["wash_solv"]
-
-        if wells[0]["volume"] < amount:
-            raise RuntimeError("Wash solvent insufficient")
-
-        safe_lift()
-        pos = wells[0]["position"]
-        pip.move_to(pos.top(30))
-
-        wells[0]["volume"] -= amount
-
-        state["plate"] = None
-        state["well"]  = None
-        state["last_action"] = "wash"
-        state["last_args"] = arg
-        state["timestamp"] = time.time()
-
-        return True
-
-    # ---------- SCAN ----------
-    elif mode == "scan":
-        plate = cast(str, arg["plate"])
-        well  = cast(str, arg["well"])
-
-        safe_lift()
-
-        pos = ctx["core_amounts"][plate][well]["position"]
-        pip.move_to(pos.top(30))
-
-        state["plate"] = plate
-        state["well"]  = well
-        state["last_action"] = "scan"
-        state["last_args"] = arg
-        state["timestamp"] = time.time()
-
-        return True
 
 
 @register_action("test_action")

@@ -2,7 +2,7 @@ from opentrons.protocol_api.instrument_context import InstrumentContext
 from opentrons.types import Point, Location
 from opentrons.protocol_api.labware import Well
 from typing import Dict, List
-from opentrons_drivers.common.custom_types import StockWell, CoreWell
+from opentrons_drivers.common.custom_types import StockWell, CoreWell, StaticCtx
 from typing import Dict, Callable, TypeVar
 import time
 import re
@@ -298,3 +298,60 @@ def resolve_column(anchor: Well, channels: int) -> list[Well]:
             f"column {column_name} of '{anchor.parent}' has {len(column)}"
         )
     return column
+
+def record_state(ctx: StaticCtx, action: str, **fields: object) -> None:
+    """Stamp the mechanical-move state after a routine, in one call.
+
+    Always records ``last_action`` and a fresh ``timestamp``; any extra keyword
+    (``plate``, ``well``, ``last_args``) updates just that field, so callers pass
+    only what changed. Methods that do not settle over a well (lift, probe
+    pickup/return) pass nothing extra, leaving the last position intact so
+    :func:`safe_lift` still knows where the tool is.
+
+    :param ctx: The StaticCtx whose ``system_state`` is updated.
+    :param action: Name recorded as the last action.
+    :param fields: Optional state fields to overwrite (e.g. plate, well, last_args).
+    """
+    state = ctx["system_state"]
+    state["last_action"] = action
+    state["timestamp"] = time.time()
+    state.update(fields)
+    
+
+def require_single_channel(pip: InstrumentContext, method: str) -> None:
+    """Probing/sampling addresses individual wells - coherent only single-channel."""
+    if pip.channels != 1:
+        raise RuntimeError(
+            f"mechanical method '{method}' needs a single-channel pipette, but the "
+            f"mount holds a {pip.channels}-channel pipette"
+        )
+
+
+def safe_lift(pip: InstrumentContext, ctx: StaticCtx) -> None:
+    """Lift the tool clear of whatever it was last over, before the next move.
+
+    Reads ctx["system_state"] to know where the tool is: over the wash well after
+    a wash, over a core well after a move, else the first available core well as a
+    safe default.
+    """
+    state = ctx["system_state"]
+    plate = state.get("plate")
+    well = state.get("well")
+    mode_prev = state.get("last_action")
+
+    if plate is None or well is None:
+        core = ctx["core_amounts"]
+        if core:
+            first_plate = next(iter(core.keys()))
+            first_well = next(iter(core[first_plate].keys()))
+            pos = core[first_plate][first_well]["position"]
+            pip.move_to(pos.top(50))
+        return
+
+    if mode_prev == "wash":
+        wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
+        pip.move_to(wash.top(50))
+        return
+
+    pos = ctx["core_amounts"][plate][well]["position"]
+    pip.move_to(pos.top(50))
