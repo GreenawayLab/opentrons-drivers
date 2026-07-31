@@ -296,15 +296,15 @@ def move(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bo
     arg x/y/z (each defaults to 0, i.e. the well top).
     """
     help.require_single_channel(pip, "move")
-    plate = cast(str, arg["plate"])
-    well = cast(str, arg["well"])
+    # plate = cast(str, arg["plate"])
+    # well = cast(str, arg["well"])
     help.safe_lift(pip, ctx)
-    pos = ctx["core_plates"][plate][well]["position"]
+    pos = ctx["core_amounts"][arg["plate"]][arg["well"]]["position"]
     x = float(arg.get("x", 0.0))
     y = float(arg.get("y", 0.0))
     z = float(arg.get("z", 0.0))
     pip.move_to(pos.top().move(Point(x, y, z)))
-    help.record_state(ctx, "move", plate=plate, well=well, last_args=arg)
+    help.record_state(ctx, "move", plate=arg["plate"], well=arg["well"], last_args=arg)
     return True
 
 
@@ -317,9 +317,9 @@ def probe_pickup(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
     and clearance `approach_z` come from the payload.
     """
     help.require_single_channel(pip, "probe_pickup")
-    plate = cast(str, arg["holder"])
-    well = cast(str, arg["well"])
-    pos = ctx["core_plates"][plate][well]["position"]
+    # plate = cast(str, arg["holder"])
+    # well = cast(str, arg["well"])
+    pos = ctx["core_amounts"][arg["holder"]][arg["well"]]["position"]
     speed = float(arg.get("speed", 80))
     approach_z = float(arg.get("approach_z", 30))
     pip.move_to(pos.top(approach_z), speed=speed)
@@ -333,9 +333,9 @@ def probe_return(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
     """Return the probe to its holder and eject with drop_tip.
     """
     help.require_single_channel(pip, "probe_return")
-    plate = cast(str, arg["holder"])
-    well = cast(str, arg["well"])
-    pos = ctx["core_plates"][plate][well]["position"]
+    # plate = cast(str, arg["holder"])
+    # well = cast(str, arg["well"])
+    pos = ctx["core_amounts"][arg["holder"]][arg["well"]]["position"]
     speed = float(arg.get("speed", 80))
     approach_z = float(arg.get("approach_z", 30))
     pip.move_to(pos.top(approach_z), speed=speed)
