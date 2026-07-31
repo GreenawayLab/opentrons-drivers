@@ -330,6 +330,9 @@ def probe_pickup(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
 @register_mechanical_method("probe_return")
 def probe_return(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType]) -> bool:
     """Return the probe to its holder and eject with drop_tip.
+
+    Ejects at the holder position via the engine's drop-in-place primitive,
+    avoiding drop_tip(well)'s SBS-96 density check that rejects a sparse holder.
     """
     help.require_single_channel(pip, "probe_return")
     plate = cast(str, arg["holder"])
@@ -338,6 +341,13 @@ def probe_return(pip: InstrumentContext, ctx: StaticCtx, arg: dict[str, JSONType
     speed = float(arg.get("speed", 80))
     approach_z = float(arg.get("approach_z", 30))
     pip.move_to(pos.top(approach_z), speed=speed)
-    pip.drop_tip(pos.top(0))
+    pip.move_to(pos.top(0), speed=speed)
+    # Eject in place, NOT drop_tip(well): drop_tip(well) computes a well-relative
+    # drop and runs wells_covered_dense(), which assumes SBS-96 density and rejects
+    # a sparse probe holder ("less dense than an SBS 96 standard"). Dropping at the
+    # current position skips all well geometry. _drop_tip_in_place is the engine
+    # core primitive for this (no public wrapper); home_after=False keeps the
+    # plunger where it is for the next pickup.
+    pip._core._drop_tip_in_place(home_after=False)
     help.record_state(ctx, "probe_return")
     return True
