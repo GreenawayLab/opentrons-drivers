@@ -355,3 +355,25 @@ def safe_lift(pip: InstrumentContext, ctx: StaticCtx) -> None:
 
     pos = ctx["core_amounts"][plate][well]["position"]
     pip.move_to(pos.top(50))
+    
+
+def resolve_core_well(ctx: StaticCtx, plate: str, well: str) -> Well:
+    """Resolve a core-plate well position, naming the real keys on a miss.
+
+    A bare ``core_amounts[plate][well]`` KeyError hides whether the plate or the
+    well is the problem, and what the valid names actually are. This surfaces
+    both, so a "no A1" failure tells you the loaded plates and that plate's wells.
+    """
+    core = ctx["core_amounts"]
+    if plate not in core:
+        raise KeyError(
+            f"plate '{plate}' not found in core_amounts; loaded core plates: "
+            f"{list(core)}"
+        )
+    if well not in core[plate]:
+        raise KeyError(
+            f"well '{well}' not found in plate '{plate}'; available wells: "
+            f"{list(core[plate])}"
+        )
+    return core[plate][well]["position"]
+ 
