@@ -60,7 +60,7 @@ def liquid_batching(pipette: InstrumentContext, amt: float, reserve: float = 0.0
     # on the robot. get_working_volume is the exact number opentrons enforces;
     # fall back to max_volume only if the (private) accessor is unavailable.
     # try:
-    usable = float(pipette._core.get_working_volume())
+    usable = float(pipette._core.get_working_volume() * 0.5)
     # except Exception:  # noqa: BLE001 - fall back to the nominal max
     #     usable = float(pipette.max_volume)
     max_vol = usable - reserve
