@@ -267,7 +267,7 @@ class Opentrons:
             unit = self.protocol.load_instrument(model, mount=mount, tip_racks=None)
             unit.swelled = None  # required for compatibility with actions
             # TODO: check what will work after update instead of old
-            # unit.max_volume = unit.max_volume * 0.8 # type: ignore[attr-defined]
+            unit.max_volume *= 0.5 # type: ignore[attr-defined]
             unit.tip_racks = self._racks_for(unit, mount)
             self.pipettes[mount] = unit
 
