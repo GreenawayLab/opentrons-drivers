@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from opentrons_control.backend.app.security import CurrentUser, get_current_user
 from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.db.runner import fetch
+from typing import Any
 
 from opentrons_control.backend.app.routers import deck, draft, method, plan
 
@@ -34,3 +35,12 @@ def list_robots_for_user(
 ) -> list[dict]:
     """Robot ids a user may target for a run, without any connection details."""
     return [{"robot_id": r["robot_id"], "enabled": r["enabled"]} for r in fetch(db, "robots/list_all.sql")]
+
+@router.get("/events")
+def my_events(
+    user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """This user's own run history, newest first (the events they launched)."""
+    return fetch(db, "events/list.sql",
+                 {"robot_id": None, "user_id": user.id, "kind": None, "limit": 200})

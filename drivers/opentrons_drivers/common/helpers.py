@@ -2,7 +2,7 @@ from opentrons.protocol_api.instrument_context import InstrumentContext
 from opentrons.types import Point, Location
 from opentrons.protocol_api.labware import Well
 from typing import Dict, List
-from opentrons_drivers.common.custom_types import StockWell, CoreWell
+from opentrons_drivers.common.custom_types import StockWell, CoreWell, StaticCtx
 from typing import Dict, Callable, TypeVar
 import time
 import re
@@ -38,18 +38,37 @@ def make_registry_decorator(registry: Dict[str, F]) -> Callable[[str], Callable[
 
 #---------- Liquid transfer low-level functions ----------
 
-def liquid_batching(pipette: InstrumentContext, amt: float) -> List[float]:
+def liquid_batching(pipette: InstrumentContext, amt: float, reserve: float = 0.0) -> List[float]:
     """
     Split a large transfer volume into pipette-sized batches.
 
     Parameters:
         pipette (InstrumentContext): The pipette being used.
         amt (float): Total volume to transfer.
+        reserve (float): Volume in uL to keep free in the tip on every aspirate -
+            e.g. air gaps drawn on top of each chunk. Chunks are sized to
+            working_volume - reserve, so a chunk plus its air gaps never overflows
+            tip. Defaults to 0 (the original full-capacity chunking).
 
     Returns:
         List[float]: A list of individual volumes to transfer in sequence.
     """
-    max_vol = pipette.max_volume
+    # Size against the WORKING volume, not max_volume. max_volume is the nominal
+    # pipette figure (e.g. 300 for a p300); the real aspirate ceiling for the
+    # attached tip is lower (opentrons holds back ~10%, so a "300" tip may only
+    # take 270). Using max_volume overfills and raises InvalidAspirateVolumeError
+    # on the robot. get_working_volume is the exact number opentrons enforces;
+    # fall back to max_volume only if the (private) accessor is unavailable.
+    # try:
+    usable = float(pipette._core.get_working_volume())
+    # except Exception:  # noqa: BLE001 - fall back to the nominal max
+    #     usable = float(pipette.max_volume)
+    max_vol = usable - reserve
+    if max_vol <= 0:
+        raise ValueError(
+            f"reserved volume {reserve} uL leaves no room in a "
+            f"{usable} uL working tip"
+        )
     amts = [max_vol for _ in range(int(amt // max_vol))]
     res = amt % max_vol
     if res > 0:
@@ -279,3 +298,82 @@ def resolve_column(anchor: Well, channels: int) -> list[Well]:
             f"column {column_name} of '{anchor.parent}' has {len(column)}"
         )
     return column
+
+def record_state(ctx: StaticCtx, action: str, **fields: object) -> None:
+    """Stamp the mechanical-move state after a routine, in one call.
+
+    Always records ``last_action`` and a fresh ``timestamp``; any extra keyword
+    (``plate``, ``well``, ``last_args``) updates just that field, so callers pass
+    only what changed. Methods that do not settle over a well (lift, probe
+    pickup/return) pass nothing extra, leaving the last position intact so
+    :func:`safe_lift` still knows where the tool is.
+
+    :param ctx: The StaticCtx whose ``system_state`` is updated.
+    :param action: Name recorded as the last action.
+    :param fields: Optional state fields to overwrite (e.g. plate, well, last_args).
+    """
+    state = ctx["system_state"]
+    state["last_action"] = action
+    state["timestamp"] = time.time()
+    state.update(fields)
+    
+
+def require_single_channel(pip: InstrumentContext, method: str) -> None:
+    """Probing/sampling addresses individual wells - coherent only single-channel."""
+    if pip.channels != 1:
+        raise RuntimeError(
+            f"mechanical method '{method}' needs a single-channel pipette, but the "
+            f"mount holds a {pip.channels}-channel pipette"
+        )
+
+
+def safe_lift(pip: InstrumentContext, ctx: StaticCtx) -> None:
+    """Lift the tool clear of whatever it was last over, before the next move.
+
+    Reads ctx["system_state"] to know where the tool is: over the wash well after
+    a wash, over a core well after a move, else the first available core well as a
+    safe default.
+    """
+    state = ctx["system_state"]
+    plate = state.get("plate")
+    well = state.get("well")
+    mode_prev = state.get("last_action")
+
+    if plate is None or well is None:
+        core = ctx["core_amounts"]
+        if core:
+            first_plate = next(iter(core.keys()))
+            first_well = next(iter(core[first_plate].keys()))
+            pos = core[first_plate][first_well]["position"]
+            pip.move_to(pos.top(50))
+        return
+
+    if mode_prev == "wash":
+        wash = ctx["stock_amounts"]["wash_solv"][0]["position"]
+        pip.move_to(wash.top(50))
+        return
+
+    pos = ctx["core_amounts"][plate][well]["position"]
+    pip.move_to(pos.top(50))
+    
+
+def resolve_core_well(ctx: StaticCtx, plate: str, well: str) -> Well:
+    """Resolve a core-plate well position, naming the real keys on a miss.
+
+    A bare ``core_amounts[plate][well]`` KeyError hides whether the plate or the
+    well is the problem, and what the valid names actually are. This surfaces
+    both, so a "no A1" failure tells you the loaded plates and that plate's wells.
+    """
+    core = ctx["core_amounts"]
+    if plate not in core:
+        raise KeyError(
+            f"plate '{plate}' not found in core_amounts; loaded core plates: "
+            f"{list(core)}"
+        )
+    if well not in core[plate]:
+        raise KeyError(
+            f"well '{well}' not found in plate '{plate}'; available wells: "
+            f"{list(core[plate])}"
+        )
+    return core[plate][well]["position"]
+ 

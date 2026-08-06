@@ -13,6 +13,7 @@ loop via run_in_executor().
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -242,9 +243,19 @@ class OTBootstrap:
         key_path: Path,
         protocol_name: str,
         launch_id: str,
+        robot_type: str = "OT-2",
     ):
         self.ssh = SSHClient(host=host, user=user, key_path=key_path)
-        self.protocol_name = protocol_name
+        # selects which entry file start_agent runs (agent_main.py vs
+        # agent_main_flex.py), since robotType is a static literal per file.
+        # "OT-2" (default) or "Flex".
+        self.robot_type = robot_type
+        # slugify: this name is a client- or plan-supplied string that goes
+        # straight into remote shell paths (mkdir, scp). An unsanitised space
+        # splits the command ("wills will" -> two dirs) and a metacharacter
+        # (; $ & quotes) is a remote-shell injection. Keep only path-safe
+        # characters so no name can break or hijack the bootstrap.
+        self.protocol_name = _slug(protocol_name)
         self.launch_id = launch_id
 
     # ------------------------------------------------------------------
@@ -262,7 +273,7 @@ class OTBootstrap:
 
     def prepare_dir(self) -> None:
         """Create the launch directory tree on the OT."""
-        paths = " ".join(self.subdir(name) for name in gv.LAUNCH_SUBDIRS)
+        paths = " ".join(shlex.quote(self.subdir(name)) for name in gv.LAUNCH_SUBDIRS)
         self.ssh.run(f"mkdir -p {paths}")
 
     # ------------------------------------------------------------------
@@ -282,6 +293,29 @@ class OTBootstrap:
             self.ssh.upload(local, f"{target}/{local.name}")
 
     # ------------------------------------------------------------------
+
+    def _flex_system_version(self) -> str:
+        """Resolve OT_SYSTEM_VERSION as the robot's own opentrons.config reports it.
+
+        opentrons.config gates its Flex (YOCTO) branch on OT_SYSTEM_VERSION being
+        in the environment; a bare SSH launch doesn't inherit it, so we ask the
+        robot for its value and pass it in explicitly. Importing opentrons.config
+        does not raise when the var is unset - it logs and leaves the module
+        default "0.0.0" - so this prints whatever the machine reports: the real
+        version if the SSH env already carries it, else "0.0.0". Either is
+        non-empty, so both satisfy the presence check; no value is hardcoded and
+        no VERSION.json key needs to be known. A failed probe falls back the same.
+        """
+        probe = (
+            "PYTHONPATH=/opt/opentrons-robot-server:$PYTHONPATH python3 -c "
+            "'from opentrons.config import OT_SYSTEM_VERSION; print(OT_SYSTEM_VERSION)' "
+            "2>/dev/null"
+        )
+        try:
+            version = self.ssh.run_output(probe, timeout=30).strip()
+        except SSHError:
+            version = ""
+        return version or gv.FLEX_SYSTEM_VERSION_FALLBACK
 
     def start_agent(self) -> None:
         """
@@ -313,6 +347,26 @@ class OTBootstrap:
         PATH, and ``opentrons_drivers`` installed.
         """
         env_prefix = " ".join(f"{k}={v}" for k, v in gv.AGENT_ENV.items())
+        if self.robot_type == "Flex":
+            # Establish the Flex runtime the launched process would otherwise
+            # inherit from robot-server's systemd unit but doesn't over a bare SSH
+            # launch. opentrons.config gates its architecture branch on
+            # OT_SYSTEM_VERSION being present in the environment: if set ->
+            # ARCHITECTURE = YOCTO (Flex); if absent -> it falls through to reading
+            # buildroot_version from /etc/VERSION.json, which a Flex lacks, and the
+            # whole run collapses to OT-2 defaults (no pipettes, empty deck config
+            # -> the "C2 not provided" cascade). The value only has to be present;
+            # we pass the real one so downstream version logic stays honest. The
+            # feature flag then builds the OT-3 (Flex) hardware controller; without
+            # it, no Flex pipettes come up. OT-2 must NOT get either of these.
+            env_prefix += (
+                f" OT_SYSTEM_VERSION={shlex.quote(self._flex_system_version())}"
+                " OT_API_FF_enableOT3HardwareController=true"
+            )
+        # robotType is a static literal in the entry file (opentrons parses it
+        # with ast.literal_eval), so we select the matching file rather than pass
+        # an env var. OT-2 and Flex ship as sibling entry points in the wheel.
+        relpath = gv.AGENT_MAIN_FLEX_RELPATH if self.robot_type == "Flex" else gv.AGENT_MAIN_RELPATH
 
         # $(pip show ...) yields the install Location; append the fixed
         # relative path to reach agent_main.py. Word-splitting does not apply
@@ -326,10 +380,22 @@ class OTBootstrap:
         cmd = (
             f"systemctl stop opentrons-robot-server || true; "
             f"cd {self.launch_dir} && "
-            f"AGENT_MAIN={location}/{gv.AGENT_MAIN_RELPATH} && "
+            f"AGENT_MAIN={location}/{relpath} && "
             f'test -f "$AGENT_MAIN" && '
             f"{{ nohup env {env_prefix} "
             f'opentrons_execute "$AGENT_MAIN" '
             f"> {self.launch_dir}/logs/agent.log 2>&1 < /dev/null & }}"
         )
         self.ssh.run(cmd)
+
+
+def _slug(name: str) -> str:
+    """Reduce a name to a safe remote path segment.
+
+    Keeps alphanumerics and ``. _ -``; collapses every other run of characters
+    (spaces, quotes, shell metacharacters) to a single underscore and trims
+    leading/trailing underscores. An all-unsafe name falls back to "protocol"
+    so the path segment is never empty.
+    """
+    slugged = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
+    return slugged or "protocol"

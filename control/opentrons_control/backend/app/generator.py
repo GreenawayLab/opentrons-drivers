@@ -147,6 +147,7 @@ def plan_to_protocol(
         params = how.get("params") or {}
         pipette = how.get("pipette") or "auto"
         tip_policy = how.get("tip") or "fresh"
+        return_tip = bool(how.get("return_tip", False))
 
         # resolve the pipette and its channel count up front: the channel count
         # drives both the column fan-out and the fill_to guard below.
@@ -256,6 +257,7 @@ def plan_to_protocol(
                 "method": method,
                 "pipette_mount": mount,
                 "tip_cycle": [flag["pickup"], flag["drop"]],
+                "return_tip": return_tip,
             }
             if channels > 1:
                 payload["wells"] = recv_wells

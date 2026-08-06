@@ -22,6 +22,15 @@ metadata = {
     "protocolName": "ot_agent",
     "author": "Aleksandr Ostudin",
     "description": "Activate OT based on HTTP requests",
+}
+
+# opentrons parses `requirements` STATICALLY (ast.literal_eval), so robotType
+# must be a plain literal - it cannot be computed (no os.environ, no calls).
+# This file is the OT-2 entry; agent_main_flex.py is its Flex twin, and the
+# launcher points opentrons_execute at whichever matches the config's robot_type.
+# apiLevel lives here now (requirements wins over metadata.apiLevel).
+requirements = {
+    "robotType": "OT-2",
     "apiLevel": "2.24",
 }
 

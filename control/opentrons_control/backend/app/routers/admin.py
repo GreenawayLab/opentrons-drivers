@@ -32,7 +32,7 @@ from opentrons_control.backend.app.security import CurrentUser, hash_password, r
 from opentrons_control.backend.app.db.db_session import get_db
 from opentrons_control.backend.app.db.runner import execute, fetch, fetch_one
 from opentrons_control.backend.app.vault import put_secret
-from opentrons_control.backend.app.protocol_model import BaseConfig, custom_labware_refs
+from opentrons_control.backend.app.protocol_model import BaseConfig, custom_labware_refs, standard_unit_refs
 import opentrons_control.backend.app.settings.global_variables as gv
 
 router = APIRouter(prefix="/api")
@@ -95,6 +95,16 @@ class InviteInfo(BaseModel):
 
 
 # -------------------- robots --------------------
+
+
+@router.get("/events")
+def all_events(
+    user: CurrentUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Every user's events, newest first - the oversight log for all activity."""
+    return fetch(db, "events/list.sql",
+                 {"robot_id": None, "user_id": None, "kind": None, "limit": 500})
 
 
 @router.get("/robots", response_model=list[RobotInfo])
@@ -325,7 +335,22 @@ def delete_standard_unit(
     user: CurrentUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Delete a standard module or pipette string (admin only)."""
+    """Delete a standard unit, refusing while a saved config still references it.
+
+    Mirrors the guard on custom labware: a module, pipette, tiprack, plate, or
+    reservoir cannot be deleted while any config depends on it, so a delete can
+    never silently break someone's saved deck.
+    """
+    users_of = [
+        c["name"]
+        for c in fetch(db, "deck_configs/all_with_config.sql")
+        if name in standard_unit_refs(BaseConfig.model_validate(c["config"]))
+    ]
+    if users_of:
+        raise HTTPException(
+            status_code=409,
+            detail=f"unit '{name}' is in use by config(s): {', '.join(users_of)}",
+        )
     execute(db, "standard_units/delete.sql", {"name": name})
     return {"status": "deleted", "name": name}
 

@@ -35,6 +35,7 @@ from typing import Any, Awaitable, Callable
 
 from opentrons_control.backend.app.ot_client import OTClient
 from opentrons_control.backend.app.protocol_model import Step
+from opentrons_control.backend.app.events import log_event
 
 _POLL_SECONDS = 0.5
 
@@ -149,6 +150,25 @@ class Executor:
         self._control: asyncio.Queue[Control] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
 
+    def _event(self, kind: str, message: str | None = None) -> None:
+        """Record one run-lifecycle event to the surveillance log.
+
+        The executor only ever drives manual runs (the auto path is the session
+        machinery), so source is always "manual". Pulls actor/robot/plan/run from
+        the live Run, so a call site only names the kind. Never raises.
+        """
+        log_event(
+            kind=kind,
+            status=self.run.status,
+            source="manual",
+            actor=self.run.owner or None,
+            robot_id=self.run.robot_id,
+            plan_name=self.run.plan_name or None,
+            run_id=self.run.run_id,
+            session_token=self.run.token,
+            message=message or self.run.error,
+        )
+
     def attach_session(
         self, agent_base_url: str, token: str, on_teardown: Callable[[], Awaitable[None]]
     ) -> None:
@@ -162,6 +182,7 @@ class Executor:
         self._on_teardown = on_teardown
         self.run.token = token
         self.run.status = "ready"
+        self._event("ready")
 
     async def _teardown(self) -> None:
         """Release the session and stop the agent, whatever the terminal state.
@@ -224,6 +245,7 @@ class Executor:
         """
         if self._task is None:
             self.run.status = "cancelled"
+            self._event("cancelled")
             asyncio.create_task(self._teardown())
 
     # ---- the loop ----
@@ -282,12 +304,14 @@ class Executor:
             async with self._client() as client:
                 await client.wait_until_ready()
                 self.run.status = "running"
+                self._event("running")
                 # while, not for: the cursor is external mutable state on the Run
                 # (status reports it, resume would restart from it, control can
                 # re-decide against it), so it cannot be a loop-internal counter
                 while self.run.cursor < self.run.total:
                     if await self._drain_control():
                         self.run.status = "aborted"
+                        self._event("aborted")
                         return
                     cmd = self.run.stream[self.run.cursor]
                     snap = await client.submit_action(cmd.action, cmd.payload)
@@ -296,13 +320,23 @@ class Executor:
                         snap = await client.get_job(snap.job_id)
                     if snap.status == "failed":
                         self.run.status = "failed"
-                        self.run.error = f"command {self.run.cursor + 1} ({cmd.action}) failed on the robot"
+                        detail = (snap.error or "").strip() or "no detail reported by the agent"
+                        self.run.error = (
+                            f"command {self.run.cursor + 1} ({cmd.action}) failed on the robot:\n{detail}"
+                        )
+                        self._event("failed")
                         return
                     self.run.cursor += 1
                 self.run.status = "complete"
+                self._event("complete")
         except Exception as exc:  # agent unreachable, bootstrap gap, transport error
             self.run.status = "failed"
-            self.run.error = str(exc)
+            self.run.error = (
+                f"lost contact with the robot during command {self.run.cursor + 1}"
+                f" of {len(self.run.stream)}: {exc}. The agent may have crashed"
+                f" (e.g. a hardware fault); check the robot's postbox/status.json."
+            )
+            self._event("failed")
         finally:
             await self._teardown()
 

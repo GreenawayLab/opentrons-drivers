@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Events{% endblock %}
+{% block body %}
+  {% include "admin/_tabs.html" %}
+
+  <div id="msg"></div>
+  <div class="bar"><h2>All events</h2></div>
+
+  <table id="events-table">
+    <thead>
+      <tr><th>When</th><th>Who</th><th>Source</th><th>Event</th><th>Status</th><th>Robot</th><th>Plan</th><th>Detail</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+  async function load() {
+    let rows;
+    try {
+      const r = await fetch("/admin/events/data");
+      if (!r.ok) throw new Error(r.status);
+      rows = await r.json();
+    } catch (e) {
+      document.getElementById("msg").textContent = "Failed to load events.";
+      return;
+    }
+    const body = document.querySelector("#events-table tbody");
+    body.innerHTML = rows.map(e => {
+      let src = "";
+      try { src = (e.detail && e.detail.source) || ""; } catch (_) {}
+      return `<tr><td>${new Date(e.created_at).toLocaleString()}</td>` +
+        `<td>${e.actor || "?"}</td><td>${src}</td>` +
+        `<td>${e.kind}</td><td>${e.status || ""}</td>` +
+        `<td>${e.robot_id || ""}</td><td>${e.plan_name || ""}</td>` +
+        `<td>${e.message || ""}</td></tr>`;
+    }).join("") || `<tr><td colspan="8" class="muted">No events yet.</td></tr>`;
+  }
+  load();
+  </script>
+{% endblock %}
